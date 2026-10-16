@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="84" viewBox="0 0 420 84">
+  <rect x="2" y="2" width="416" height="80" rx="16" fill="#1f883d" stroke="#1a7f37" stroke-width="2"/>
+  <g fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M60 22v28"/>
+    <path d="M47 38l13 13 13-13"/>
+    <path d="M44 60h32"/>
+  </g>
+  <text x="96" y="41" fill="#fff" font-family="'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif" font-size="28" font-weight="700">다운로드</text>
+  <text x="96" y="66" fill="#d8f5df" font-family="'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif" font-size="16">Windows용 설치 파일 · 무료</text>
+</svg>

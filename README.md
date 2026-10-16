@@ -6,7 +6,7 @@ Codex · Claude 앱 위에 <b>토큰 수 · 걸린 시간 · 속도</b>와 <b>�
 
 <p align="center">
   <a href="https://github.com/igayowai/TokenOverlay/releases/latest/download/TokenOverlay-win-Setup.exe">
-    <img src="https://img.shields.io/badge/%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C-Windows%EC%9A%A9%20%EC%84%A4%EC%B9%98%20%ED%8C%8C%EC%9D%BC-2ea44f?style=for-the-badge&logo=windows&logoColor=white" alt="다운로드 (Windows용 설치 파일)" height="56">
+    <img src="download-button.svg" alt="다운로드 (Windows용 설치 파일)" width="420">
   </a>
 </p>
 
