@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="300" viewBox="0 0 1280 300">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1e1b4b" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+  <g font-family="'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR','Segoe UI',sans-serif">
+    <!-- 1 -->
+    <g transform="translate(8 16)" filter="url(#shadow)">
+      <rect width="300" height="268" rx="22" fill="#ffffff" stroke="#e5e7ef"/>
+      <rect x="28" y="28" width="60" height="60" rx="16" fill="#ede9fe"/>
+      <g fill="none" stroke="#6d5bd0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M58 44v14l9 7"/><circle cx="58" cy="58" r="17"/>
+      </g>
+      <text x="28" y="132" fill="#1f2328" font-size="25" font-weight="700">한 턴 통계</text>
+      <text x="28" y="172" fill="#4b5563" font-size="18">방금 쓴 토큰, 걸린 시간,</text>
+      <text x="28" y="200" fill="#4b5563" font-size="18">초당 토큰을 바로 보여 줌</text>
+      <text x="28" y="240" fill="#6d5bd0" font-size="16" font-weight="700">Codex · Claude 둘 다</text>
+    </g>
+    <!-- 2 -->
+    <g transform="translate(332 16)" filter="url(#shadow)">
+      <rect width="300" height="268" rx="22" fill="#ffffff" stroke="#e5e7ef"/>
+      <rect x="28" y="28" width="60" height="60" rx="16" fill="#fae8ff"/>
+      <g fill="none" stroke="#a21caf" stroke-width="4" stroke-linecap="round">
+        <path d="M58 41a17 17 0 1 1-17 17"/><path d="M58 41v17h-17" />
+      </g>
+      <text x="28" y="132" fill="#1f2328" font-size="25" font-weight="700">주간 한도</text>
+      <text x="28" y="172" fill="#4b5563" font-size="18">이번 주 사용량을</text>
+      <text x="28" y="200" fill="#4b5563" font-size="18">내 몫 · 다른 곳 몫으로 나눔</text>
+      <text x="28" y="240" fill="#a21caf" font-size="16" font-weight="700">초기화 시각도 표시</text>
+    </g>
+    <!-- 3 -->
+    <g transform="translate(656 16)" filter="url(#shadow)">
+      <rect width="300" height="268" rx="22" fill="#ffffff" stroke="#e5e7ef"/>
+      <rect x="28" y="28" width="60" height="60" rx="16" fill="#dcfce7"/>
+      <g fill="none" stroke="#15803d" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="40" y="42" width="36" height="25" rx="4"/><path d="M50 75h16M58 67v8"/>
+      </g>
+      <text x="28" y="132" fill="#1f2328" font-size="25" font-weight="700">내 기기 합치기</text>
+      <text x="28" y="172" fill="#4b5563" font-size="18">PC와 노트북을 같이 쓰면</text>
+      <text x="28" y="200" fill="#4b5563" font-size="18">구글 드라이브로 묶어서 셈</text>
+      <text x="28" y="240" fill="#15803d" font-size="16" font-weight="700">서버 없이, 내 드라이브만</text>
+    </g>
+    <!-- 4 -->
+    <g transform="translate(980 16)" filter="url(#shadow)">
+      <rect width="292" height="268" rx="22" fill="#ffffff" stroke="#e5e7ef"/>
+      <rect x="28" y="28" width="60" height="60" rx="16" fill="#e0f2fe"/>
+      <g fill="none" stroke="#0369a1" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M58 40v26M47 56l11 11 11-11"/><path d="M44 76h28"/>
+      </g>
+      <text x="28" y="132" fill="#1f2328" font-size="25" font-weight="700">자동 업데이트</text>
+      <text x="28" y="172" fill="#4b5563" font-size="18">새 버전을 알아서 받아 두고</text>
+      <text x="28" y="200" fill="#4b5563" font-size="18">누르면 바로 바뀜</text>
+      <text x="28" y="240" fill="#0369a1" font-size="16" font-weight="700">설치는 한 번만</text>
+    </g>
+  </g>
+</svg>
