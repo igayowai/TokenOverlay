@@ -52,7 +52,7 @@
 <summary><b>개인정보</b></summary>
 <br>
 
-- 기록은 내 PC(`%LOCALAPPDATA%\CodexTurnOverlay`)에만 저장됨. 내 기기 공유를 켜면 내 구글 드라이브에도 저장됨. 외부 서버로 보내는 건 없음.
+- 기록은 내 PC(`%APPDATA%\TokenOverlay`)에만 저장됨. 내 기기 공유를 켜면 내 구글 드라이브에도 저장됨. 외부 서버로 보내는 건 없음.
 - 앱 연결을 켜면 Codex·Claude 앱의 사용 기록을 이 PC 안에서만 받아 속도를 계산함. 질문 내용은 받지 않음.
 - 기기 구별에는 Windows 기기 고유값을 변환한 짧은 ID를 씀. 계정 정보는 쓰지 않음.
 </details>
@@ -62,7 +62,7 @@
 <br>
 
 Windows 설정 → 앱 → 설치된 앱 → **TokenOverlay** 옆 `⋯` → **제거**.
-자동 실행과 앱 연결도 함께 원래대로 되돌림. 기록 폴더 `%LOCALAPPDATA%\CodexTurnOverlay`는 남으니, 필요 없으면 직접 지우면 됨.
+자동 실행과 앱 연결도 함께 원래대로 되돌림. 기록 폴더 `%APPDATA%\TokenOverlay`는 남으니, 필요 없으면 직접 지우면 됨.
 </details>
 
 <br>
