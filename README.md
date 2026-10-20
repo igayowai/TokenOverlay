@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="TokenOverlay — AI가 방금 쓴 토큰·시간·속도를 앱 화면 위에서 바로" width="100%">
+  <img src="assets/banner.png" alt="TokenOverlay — AI가 방금 쓴 토큰·시간·속도를 앱 화면 위에서 바로" width="100%">
 </p>
 
 <p align="center">
@@ -13,7 +13,7 @@
 <br>
 
 <p align="center">
-  <img src="assets/preview.svg" alt="Codex·Claude 앱 위에 뜬 캡슐과 자세히 보기 창" width="100%">
+  <img src="assets/preview.png" alt="한 턴이 끝난 뒤의 캡슐, Ctrl을 누른 채 올리면 펼쳐지는 최근 턴 창" width="100%">
 </p>
 
 <p align="center">
@@ -34,7 +34,9 @@
 ## 쓰는 법
 
 - 트레이(화면 오른쪽 아래 시계 옆 `^`)에 있는 아이콘을 누르면 설정 메뉴가 나옴.
-- 캡슐에 마우스를 올리면 최근 턴과 이번 주 사용량이 펼쳐짐.
+- 캡슐을 누르면 방금 끝난 턴을 자세히 보여 줌.
+- **Ctrl**을 누른 채 캡슐에 마우스를 올리면 최근 턴과 이번 주 사용량이 펼쳐짐.
+- 캡슐 아래 줄: **모델** = 도구 실행 시간을 뺀 속도, **생성** = 첫 토큰 대기까지 뺀 속도. 설정 메뉴에서 줄마다 끌 수 있음.
 - PC와 노트북을 같이 쓰면 메뉴의 **내 기기 공유 (구글 드라이브)** 를 켜 둠. 두 기기 사용량을 합쳐서 "나"로 셈.
 - 업데이트는 자동임. 새 버전이 준비되면 메뉴 맨 위에 **업데이트 적용 · 재시작** 이 생김.
 
