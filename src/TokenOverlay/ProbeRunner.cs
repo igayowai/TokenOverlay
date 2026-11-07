@@ -180,6 +180,11 @@ internal static partial class ProbeRunner
                 Rows = TurnPresentation.HistoryRows(new TurnHistory(claudeReader.Recent(TurnHistory.Size).Select(r => r.Turn).ToArray())) });
             return true;
         }
+        if (args.Count >= 2 && args[0] == "--account-tests")
+        {
+            WriteJson(args[1], AccountChecks.Run(Path.GetDirectoryName(Path.GetFullPath(args[1]))!));
+            return true;
+        }
         if (args.Count >= 2 && args[0] == "--watcher-tests")
         {
             WriteJson(args[1], CodexLaunchWatcher.Test());

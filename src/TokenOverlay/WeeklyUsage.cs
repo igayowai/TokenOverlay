@@ -68,10 +68,18 @@ internal static class WeeklySplit
 
     // The weekly line read back for the list panel's bar: who spent what share of the limit, and the account's total.
     // People: how many of the parts just before "다른 곳" are other people's.
-    internal sealed record Bar(string Since, IReadOnlyList<(string Name, int Percent)> Parts, int Account, int People = 0);
+    // Who: the account's name when it is not the user's own ("동생 · 이번주 …", see AccountBook), else null.
+    internal sealed record Bar(string Since, IReadOnlyList<(string Name, int Percent)> Parts, int Account, int People = 0, string? Who = null);
 
     private static readonly System.Text.RegularExpressions.Regex BarLine = new(
-        @"^이번주 (?<since>\S+~) · (?:(?<name>[^·]+?) (?<share>\d+)% · ){1,8}다른 곳 (?<other>\d+)% · 계정 (?<acc>\d+)%$");
+        @"^(?:(?<who>[^·]+?) · )?이번주 (?<since>\S+~) · (?:(?<name>[^·]+?) (?<share>\d+)% · ){1,8}다른 곳 (?<other>\d+)% · 계정 (?<acc>\d+)%$");
+
+    // The week of an account other than the user's own, under its name; this PC's part reads "이 PC", not "나", there
+    // (2026-11-07 user's choice: "동생 · … 나 5%" read as the user's own).
+    internal static string Named(string who, string line) => $"{LineName(who)} · {line.Replace("~ · 나 ", "~ · 이 PC ")}";
+
+    // The week's place while another account is in use and its week is not known yet.
+    internal static string Unknown(string who, string app) => $"{LineName(who)} 계정 사용 중 · 주간 사용량은 {app} 기록이 쌓이면 보임";
 
     public static Bar? ParseLine(string line)
     {
@@ -81,7 +89,8 @@ internal static class WeeklySplit
         var names = m.Groups["name"].Captures.Select(c => c.Value).ToArray();
         var parts = names.Zip(m.Groups["share"].Captures, (name, share) => (name.TrimStart(PersonMark), N(share.Value)))
             .Append(("다른 곳", N(m.Groups["other"].Value))).ToArray();
-        return new Bar(m.Groups["since"].Value, parts, N(m.Groups["acc"].Value), names.Count(name => name.StartsWith(PersonMark)));
+        return new Bar(m.Groups["since"].Value, parts, N(m.Groups["acc"].Value), names.Count(name => name.StartsWith(PersonMark)),
+            m.Groups["who"].Success ? m.Groups["who"].Value : null);
     }
 
     // The reset line as a graph: when it starts over, how long is left, and the share of the 7-day week gone by.
@@ -296,6 +305,10 @@ internal static class WeeklyUsageMath
 
     // Under the week in the login's last days, so it can be renewed before the percent stops:
     // "로그인 2일 5시간 후 만료 · 눌러서 다시 로그인", or "로그인 만료됨 · …" once the time has passed.
+    // Under the user's week while Claude Code in a terminal is signed in to another account (AccountBook.CodeOther): the
+    // usage API is not asked then, as it would answer for that account; a click signs Claude Code in again.
+    public static string CodeOtherLine(string name) => $"Claude Code 로그인: {WeeklySplit.LineName(name)} · {WeeklySplit.LoginAction}";
+
     public static string LoginLine(long endMs, DateTimeOffset now)
     {
         var left = TimeSpan.FromMilliseconds(endMs - now.ToUnixTimeMilliseconds());
@@ -307,6 +320,15 @@ internal static class WeeklyUsageMath
 
     public static IReadOnlyList<WeeklySample> ParseHistory(string json)
     {
+        var list = ParseHistoryByOrg(json);
+        if (list.Count == 0) return [];
+        var account = list[^1].Org;
+        return list.Where(s => s.Org == account).Select(s => new WeeklySample(s.At, s.Percent)).ToArray();
+    }
+
+    // Every reading with the derived key of the organization it was read for (AccountBook), oldest first.
+    public static IReadOnlyList<(long At, string? Org, int Percent)> ParseHistoryByOrg(string json)
+    {
         var list = new List<(long At, string? Org, int Percent)>();
         using var doc = JsonDocument.Parse(json);
         if (doc.RootElement.ValueKind != JsonValueKind.Object
@@ -317,13 +339,12 @@ internal static class WeeklyUsageMath
                 || !sample.TryGetProperty("t", out var t) || !t.TryGetInt64(out var at)
                 || !sample.TryGetProperty("u", out var u) || u.ValueKind != JsonValueKind.Object
                 || !u.TryGetProperty("sd", out var sd) || sd.ValueKind != JsonValueKind.Number) continue;
-            var org = sample.TryGetProperty("org", out var o) && o.ValueKind == JsonValueKind.String ? o.GetString() : null;
+            var org = sample.TryGetProperty("org", out var o) && o.ValueKind == JsonValueKind.String && o.GetString() is { Length: > 0 } raw
+                ? AccountProbe.OrgKey(raw) : null;
             list.Add((at, org, (int)Math.Round(sd.GetDouble())));
         }
-        if (list.Count == 0) return [];
         list.Sort((a, b) => a.At.CompareTo(b.At));
-        var account = list[^1].Org;
-        return list.Where(s => s.Org == account).Select(s => new WeeklySample(s.At, s.Percent)).ToArray();
+        return list;
     }
 
     // One session-log line → the response it records, or null. Key: one response is logged once per content block.
@@ -674,17 +695,25 @@ internal sealed class WeeklyUsageMonitor : IDisposable
     private volatile string? _staleLine;
     private System.Threading.Timer? _timer;
 
-    public WeeklyUsageMonitor(Func<DriveShare?>? shareSource = null) : this(
+    public WeeklyUsageMonitor(Func<DriveShare?>? shareSource = null, AccountBook? accounts = null) : this(
         () => ClaudeSessionIndex.DataRoots().Select(root => Path.Combine(root, "plan-usage-history.json")),
         ClaudeSessionIndex.ProjectsRoot(), DefaultStorePath, ClaudeUsageApi.Fetch, ClaudeTokenRenewal.Renew, shareSource,
-        ClaudeTokenRenewal.ReadLoginEnd) { }
+        ClaudeTokenRenewal.ReadLoginEnd, accounts) { }
 
+    // accounts: which account the app was on when (AccountBook); the user's week leaves out what was spent on another,
+    // and while another is in use the line is that account's. Null: one account, as before.
     internal WeeklyUsageMonitor(Func<IEnumerable<string>> historyFiles, string projects, string? store,
         Func<DateTimeOffset, UsageApiResult>? api = null, Func<DateTimeOffset, TokenRenewal>? renew = null, Func<DriveShare?>? share = null,
-        Func<long?>? loginEnd = null)
+        Func<long?>? loginEnd = null, AccountBook? accounts = null)
     {
         _historyFiles = historyFiles; _projects = projects; _store = store; _api = api; _renew = renew; _shareSource = share; _loginEnd = loginEnd;
+        _accounts = accounts;
     }
+
+    private readonly AccountBook? _accounts;
+    private bool Mine(long ms) => _accounts?.IsMine(AccountBook.Claude, ms) ?? true;
+    // The usage record's readings with their organization, from the last pass.
+    private IReadOnlyList<(long At, string? Org, int Percent)> _history = [];
 
     // The list's bottom line, or null while nothing reliable is known.
     public string? Line => _line;
@@ -743,14 +772,22 @@ internal sealed class WeeklyUsageMonitor : IDisposable
 
     internal void Update(DateTimeOffset now)
     {
+        UpdateMine(now);
+        ShowOther(now);
+    }
+
+    // The user's own week: only the minutes, responses and readings of their own account.
+    private void UpdateMine(DateTimeOffset now)
+    {
         Load();
         long[] presence;
         lock (_presenceLock)
         {
             var oldest = (now - Kept).ToUnixTimeMilliseconds();
             _presence.RemoveWhere(t => t < oldest);
-            presence = _presence.ToArray();
+            _allPresence = _presence.ToArray();
         }
+        presence = _allPresence.Where(Mine).ToArray();
         _apiSamples.RemoveAll(s => s.AtMs < (now - Kept).ToUnixTimeMilliseconds());
         // A week that ended over a week ago is already written down: its responses are no longer needed.
         var expired = (now - ResponsesKept).ToUnixTimeMilliseconds();
@@ -767,7 +804,8 @@ internal sealed class WeeklyUsageMonitor : IDisposable
         }
         else Scan((now - ActiveWithin).UtcDateTime);
 
-        AskApi(now, presence);
+        var codeOther = _accounts?.CodeOther();
+        AskApi(now, presence, codeOther is not null);
         var ownSamples = WeeklyUsageMath.Merge(fileSamples, _apiSamples);
         var shared = Share(now, presence, ownSamples);
         _sharedReadings = shared.Readings;
@@ -781,7 +819,8 @@ internal sealed class WeeklyUsageMonitor : IDisposable
             return;
         }
         var (seen, othersShare) = (shared.Seen, shared.Others);
-        var computed = WeeklyUsageMath.Windows(samples, _responses.Values, seen, people: shared.People);
+        var mineResponses = MineResponses();
+        var computed = WeeklyUsageMath.Windows(samples, mineResponses, seen, people: shared.People);
         // A finished week is written once, while its logs still exist, and never recomputed afterwards.
         var finished = computed.Where(w => w.EndMs is not null && !_storedWeeks.Any(s => s.StartMs == w.StartMs)).ToArray();
         if (finished.Length > 0) _storedWeeks = _storedWeeks.Concat(finished).OrderBy(w => w.StartMs).ToArray();
@@ -790,7 +829,7 @@ internal sealed class WeeklyUsageMonitor : IDisposable
         // With other devices sharing, the running week is worked out once more with each of them a side of its own
         // (after other people), a rise while two were busy shared by weight: this PC's part alone and each device's.
         var devices = shared.Devices;
-        if (othersShare && WeeklyUsageMath.Windows(samples, _responses.Values, presence.Concat(shared.SelfSeen), null,
+        if (othersShare && WeeklyUsageMath.Windows(samples, mineResponses, presence.Concat(shared.SelfSeen), null,
                 [.. shared.People ?? [], .. devices.Select(device => device.Side)]) is [.., var alone])
         {
             var running = windows[^1];
@@ -811,6 +850,8 @@ internal sealed class WeeklyUsageMonitor : IDisposable
         if (_staleLine is null && _api is not null && _apiEnabled && _loginEnd?.Invoke() is long loginEnd and > 0
             && loginEnd - now.ToUnixTimeMilliseconds() <= (long)LoginWarning.TotalMilliseconds)
             _staleLine = WeeklyUsageMath.LoginLine(loginEnd, now);
+        // Claude Code's login is someone else's: neither its failures nor its expiry are the user's.
+        if (codeOther is not null) _staleLine = WeeklyUsageMath.CodeOtherLine(codeOther.Name);
         DiagnosticLog.Change("claude-weekly-line", $"{_line ?? "none"} · week from {DriveShare.When(windows[^1].StartMs)}"
             + (_staleLine is { } stale ? " · " + stale : ""));
     }
@@ -839,7 +880,8 @@ internal sealed class WeeklyUsageMonitor : IDisposable
         if (share is null) { ShareNote = "no share"; return new(presence, false, weights, [], null, null, [], []); }
         var oldest = (now - Kept).ToUnixTimeMilliseconds();
         var nowMs = now.ToUnixTimeMilliseconds();
-        var used = _responses.Values.Where(r => r.Tokens > 0 && r.AtMs >= oldest).ToArray();
+        // Only the user's own account goes to the share: another account's use on this PC stays here.
+        var used = MineResponses().Where(r => r.Tokens > 0 && r.AtMs >= oldest).ToArray();
         var own = presence.Select(ms => ms / Minute).Concat(used.Select(r => r.AtMs / Minute)).Distinct().Order().ToArray();
         var ownWeights = used.GroupBy(r => r.AtMs / Minute).OrderBy(g => g.Key)
             .Select(g => new[] { g.Key, (long)Math.Round(g.Sum(r => r.Weight)) }).Where(row => row[1] > 0).ToArray();
@@ -912,9 +954,26 @@ internal sealed class WeeklyUsageMonitor : IDisposable
         return runs.ToArray();
     }
 
-    private void AskApi(DateTimeOffset now, long[] presence)
+    internal const string CodeOtherStatus = "Claude Code가 다른 계정 · 앱의 15분 기록만 사용";
+    private bool _codeWasOther;
+
+    private void AskApi(DateTimeOffset now, long[] presence, bool codeOther = false)
     {
         if (_api is null || !_apiEnabled) return;
+        // The API answers for Claude Code's sign-in: while that is another person's, its percent and reset time are
+        // theirs, so it is not asked (nor its token renewed); back on the user's, it is asked at once.
+        if (codeOther)
+        {
+            _codeWasOther = true;
+            _apiStatus = CodeOtherStatus;
+            return;
+        }
+        if (_codeWasOther)
+        {
+            _codeWasOther = false;
+            _apiStatus = "대기";
+            _apiNext = default;
+        }
         // Let Claude Code renew a token that is about to run out, before asking with it.
         if (_renew is not null && now >= _renewNext)
         {
@@ -950,14 +1009,54 @@ internal sealed class WeeklyUsageMonitor : IDisposable
         else _apiNext = now + (result.RetryLater ? ApiBackoff : ApiActiveInterval);
     }
 
+    private WeeklyActivity[] MineResponses() => _responses.Values.Where(r => Mine(r.AtMs)).ToArray();
+
+    // The app's usage record, the user's own organization's readings: with accounts known, those of the user's
+    // account's organization (learnt from Claude Code's sign-in, or from the record while the user's account is in
+    // use); else, as before, the latest organization's.
     private IReadOnlyList<WeeklySample> ReadSamples()
     {
         var file = _historyFiles().Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
-        if (file is null) return [];
-        using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        using var reader = new StreamReader(stream, Encoding.UTF8);
-        return WeeklyUsageMath.ParseHistory(reader.ReadToEnd());
+        if (file is null) { _history = []; return []; }
+        using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        using (var reader = new StreamReader(stream, Encoding.UTF8))
+            _history = WeeklyUsageMath.ParseHistoryByOrg(reader.ReadToEnd());
+        if (_history.Count == 0) return [];
+        var mine = _accounts?.MineOf(AccountBook.Claude);
+        if (mine is { Org: null } && _history[^1].Org is { } seen && _accounts!.MineNow(AccountBook.Claude)
+            && _accounts.At(AccountBook.Claude, _history[^1].At)?.Mine == true)
+        {
+            _accounts.Note(AccountBook.Claude, mine.Key, seen);
+            mine = mine with { Org = seen };
+        }
+        var org = mine?.Org ?? _history[^1].Org;
+        return _history.Where(s => s.Org == org || s.Org is null && mine?.Org is null).Select(s => new WeeklySample(s.At, s.Percent)).ToArray();
     }
+
+    // While another account is in use the line is that account's week: the app's readings for organizations not the
+    // user's (the latest one's), and this PC's minutes and responses while that account was in use. Its percent comes
+    // only from the app's own record, as the usage API answers for Claude Code's sign-in.
+    private void ShowOther(DateTimeOffset now)
+    {
+        if (_accounts is not { } book || book.MineNow(AccountBook.Claude) || book.Current(AccountBook.Claude) is not { } other) return;
+        bool Theirs(long ms) => book.At(AccountBook.Claude, ms)?.Key == other.Key;
+        var mineOrg = book.MineOf(AccountBook.Claude)?.Org;
+        (long At, string? Org, int Percent)[] foreign = mineOrg is null ? [] : _history.Where(s => s.Org is not null && s.Org != mineOrg).ToArray();
+        var org = foreign.LastOrDefault().Org;
+        var readings = foreign.Where(s => s.Org == org).Select(s => new WeeklySample(s.At, s.Percent)).ToArray();
+        _resetLine = null; _staleLine = null;
+        if (readings.Length == 0 || now.ToUnixTimeMilliseconds() - readings[^1].AtMs > (long)Stale.TotalMilliseconds)
+        {
+            _line = WeeklySplit.Unknown(other.Name, "Claude 앱");
+            DiagnosticLog.Change("claude-weekly-line", "other account · no readings");
+            return;
+        }
+        var windows = WeeklyUsageMath.Windows(readings, _responses.Values.Where(r => Theirs(r.AtMs)), _allPresence.Where(Theirs));
+        _line = WeeklySplit.Named(other.Name, WeeklyUsageMath.Line(windows[^1], null, null));
+        DiagnosticLog.Change("claude-weekly-line", "other account · week from " + DriveShare.When(windows[^1].StartMs));
+    }
+
+    private long[] _allPresence = [];
 
     private void Scan(DateTime modifiedSinceUtc)
     {

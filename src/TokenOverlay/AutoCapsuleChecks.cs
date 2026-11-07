@@ -450,6 +450,34 @@ internal static class AutoCapsuleChecks
                 using(var g=Graphics.FromImage(big)){ g.InterpolationMode=System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor; g.DrawImage(part,0,0,big.Width,big.Height); }
                 big.Save(Path.Combine(directory,$"week-{account}-{(kind==OverlayThemeKind.Light?"light":"dark")}.png"));
             }
+            // Draft: the week while another account is in use: under its name, or the line saying its week is not known yet.
+            foreach(var (kind,name,body) in new[]{
+                (OverlayThemeKind.Light,"week-who-light",WeeklySplit.Named("동생","이번주 31(토)~ · 나 5% · 다른 곳 20% · 계정 25%")+"\n초기화 11-07 (토) 20:00 · 1일 15시간 남음"),
+                (OverlayThemeKind.Dark,"week-who-dark",WeeklySplit.Named("동생","이번주 31(토)~ · 나 5% · 다른 곳 20% · 계정 25%")+"\n초기화 11-07 (토) 20:00 · 1일 15시간 남음"),
+                (OverlayThemeKind.Light,"week-who-mine-light","이번주 31(토)~ · 나 6% · 다른 곳 3% · 계정 9%\n초기화 11-07 (토) 20:00 · 1일 15시간 남음"),
+                (OverlayThemeKind.Dark,"week-who-mine-dark","이번주 31(토)~ · 나 6% · 다른 곳 3% · 계정 9%\n초기화 11-07 (토) 20:00 · 1일 15시간 남음"),
+                (OverlayThemeKind.Light,"week-who-unknown-light",WeeklySplit.Unknown("동생","Claude 앱")),
+                (OverlayThemeKind.Dark,"week-who-unknown-dark",WeeklySplit.Unknown("동생","Claude 앱"))})
+            {
+                var listed=claude with { Sessions=rows[..2], HistoryFooter="캐시 유지 · 60분 남음 · 세션 캐시 읽기 99%\n"+body };
+                using var form=new TokenStripForm();
+                _=form.Handle;
+                form.SetPresentation(listed);
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.SetShowHistory(true);
+                form.ApplyLayout(OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,true,listed.HistoryPanelRows,false,
+                    Presentation:listed,CompactPanel:true)));
+                using var bitmap=new Bitmap(form.Width,form.Height);
+                form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
+                using var part=bitmap.Clone(form.CurrentLayout!.PanelBounds.ToRectangle(),bitmap.PixelFormat);
+                part.Save(Path.Combine(directory,$"{name}.png"));
+            }
+            {
+                var named=claude with { HistoryFooter=WeeklySplit.Named("동생","이번주 31(토)~ · 나 5% · 다른 곳 20% · 계정 25%") };
+                var plain=claude with { HistoryFooter="이번주 31(토)~ · 나 5% · 다른 곳 20% · 계정 25%" };
+                Check(named.HistoryPanelRows==plain.HistoryPanelRows && TokenStripForm.HistoryFooterWidth(named,144,100)>TokenStripForm.HistoryFooterWidth(plain,144,100),
+                    "week under another account's name: the same rows, the panel wide enough for the name");
+            }
             // Draft: the week while the usage API keeps failing, its percent the last one read; and in the login's last days.
             var kst=TimeZoneInfo.CreateCustomTimeZone("KST",TimeSpan.FromHours(9),"KST","KST");
             var signedIn=new DateTimeOffset(2026,11,6,5,0,0,TimeSpan.FromHours(9));
@@ -457,7 +485,10 @@ internal static class AutoCapsuleChecks
                 (OverlayThemeKind.Light,"week-stale-light",WeeklyUsageMath.StaleLine(new DateTimeOffset(2026,11,5,2,49,0,TimeSpan.FromHours(9)).ToUnixTimeMilliseconds(),ClaudeUsageApi.NoLogin,kst),47),
                 (OverlayThemeKind.Dark,"week-stale-dark",WeeklyUsageMath.StaleLine(new DateTimeOffset(2026,11,5,2,49,0,TimeSpan.FromHours(9)).ToUnixTimeMilliseconds(),ClaudeUsageApi.NoLogin,kst),47),
                 (OverlayThemeKind.Light,"week-login-light",WeeklyUsageMath.LoginLine(signedIn.AddDays(2).AddHours(5).AddMinutes(1).ToUnixTimeMilliseconds(),signedIn),58),
-                (OverlayThemeKind.Dark,"week-login-dark",WeeklyUsageMath.LoginLine(signedIn.AddDays(2).AddHours(5).AddMinutes(1).ToUnixTimeMilliseconds(),signedIn),58)})
+                (OverlayThemeKind.Dark,"week-login-dark",WeeklyUsageMath.LoginLine(signedIn.AddDays(2).AddHours(5).AddMinutes(1).ToUnixTimeMilliseconds(),signedIn),58),
+                // Claude Code in a terminal signed in to another account (2026-11-07): the week is the app's record only.
+                (OverlayThemeKind.Light,"week-cli-light",WeeklyUsageMath.CodeOtherLine("계정 2"),0),
+                (OverlayThemeKind.Dark,"week-cli-dark",WeeklyUsageMath.CodeOtherLine("계정 2"),0)})
             {
                 var week=$"캐시 유지 · 60분 남음 · 세션 캐시 읽기 99%\n이번주 31(토)~ · PC {percent}% · LAPTOP-1 0% · 다른 곳 0% · 계정 {percent}%\n초기화 11-07 (토) 20:00 · 1일 15시간 남음\n"+note;
                 var listed=claude with { Sessions=rows[..2], HistoryFooter=week };

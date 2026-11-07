@@ -104,13 +104,15 @@ internal sealed partial class OverlayContext : ApplicationContext
         _settings = OverlaySettings.Load(_settingsPath);
         // The user's own devices tell each other when they were busy through Google Drive, when it is installed.
         _driveLink = new DriveShareLink(_settings.DriveShareEnabled, _settings.DriveShareFolder);
-        _weekly = new WeeklyUsageMonitor(_driveLink.Current);
+        // Which Claude and Codex account is in use, read once before the weeks start so they know it from their first pass.
+        ObserveAccounts(announce: false);
+        _weekly = new WeeklyUsageMonitor(_driveLink.Current, _accounts);
         _claude = new ClaudeDesktopSource(_telemetry, _weekly);
         _weekly.Start();
         _routeMonitor = new VisibleThreadRouteMonitor(sessionRoot);
         _monitor = new TokenLogMonitor(sessionRoot);
         _titles = new ThreadTitleReader(sessionRoot);
-        _codexWeekly = new CodexWeeklyMonitor(sessionRoot, _driveLink.Current);
+        _codexWeekly = new CodexWeeklyMonitor(sessionRoot, _driveLink.Current, _accounts);
         _codexWeekly.Start();
         DriveShare.DeviceAdded += OnDeviceAdded;
         _cacheWatch.Enabled = _settings.CacheWarningEnabled;
@@ -189,6 +191,7 @@ internal sealed partial class OverlayContext : ApplicationContext
             return;
         }
         SampleCpu();
+        WatchAccounts();
 
         if (_autoUpdate.Observe(_updater.ReadyVersion is not null && !_updater.Blocked, UpdateWouldInterrupt(), DateTime.UtcNow))
         {

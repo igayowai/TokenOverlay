@@ -112,6 +112,7 @@ internal sealed partial class OverlayContext
             SampleCpu(now: true);
         };
         settingsMenu.DropDownItems.Add(cpuItem);
+        settingsMenu.DropDownItems.Add(AccountsMenu());
 
         // The rate lines under the main row, each on its own (Claude's and the worker's together).
         ToolStripMenuItem LineItem(string text, string tip, Func<bool> get, Action<bool> set)

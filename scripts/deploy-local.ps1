@@ -53,5 +53,15 @@ schtasks /Run /TN TokenOverlay | Out-Null
 $sha = (Get-FileHash (Join-Path $installed 'TokenOverlay.dll') -Algorithm SHA256).Hash.ToLower()
 if ($sha -ne (Get-FileHash (Join-Path $build 'TokenOverlay.dll') -Algorithm SHA256).Hash.ToLower()) { throw "installed dll is not this build ($sha)" }
 "dll_sha=$sha graceful=$graceful restart_ms=$down cache_saved_on_exit=$((Get-Item $cache -ErrorAction SilentlyContinue).LastWriteTime -gt $before)"
+# Velopack's recorded version stays as it was. When it is older than the newest public release, the overlay's own
+# updater puts that release in a few minutes after this start and this build is gone (2026-10-17, 10-22, 11-07).
+$recorded = Select-String -LiteralPath (Join-Path $installed 'sq.version') -Pattern '<version>([^<]+)</version>' -ErrorAction SilentlyContinue |
+    Select-Object -First 1 | ForEach-Object { $_.Matches[0].Groups[1].Value }
+$latest = $null
+try { $latest = (gh release view -R igayowai/TokenOverlay --json tagName --jq .tagName 2>$null) -replace '^v', '' } catch { }
+$older = $false
+try { $older = $recorded -and $latest -and [version]$recorded -lt [version]$latest } catch { }
+if ($older) { "WARNING recorded=$recorded < release=$latest : the updater will replace this build within minutes (watch the log's 'update:' lines)" }
+else { "recorded=$recorded release=$(if ($latest) { $latest } else { 'unknown' })" }
 Running | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }
 "port 43189 listening=$([bool](Get-NetTCPConnection -LocalPort 43189 -State Listen -ErrorAction SilentlyContinue))"

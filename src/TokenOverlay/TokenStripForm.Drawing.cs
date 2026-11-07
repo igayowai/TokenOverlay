@@ -622,7 +622,16 @@ internal sealed partial class TokenStripForm
             : index == week.Parts.Count - 1 ? Color.FromArgb(150, _palette.Label)
             : index >= firstPerson ? Color.FromArgb((index - firstPerson) % 2 == 0 ? 255 : 150, PersonColor)
             : index == 0 ? _palette.Accent : Color.FromArgb((index - 1) % 2 == 0 ? 160 : 80, _palette.Accent);
-        Text("이번주 " + week.Since, font, _palette.Value, left, right);
+        // Another account's week leads with its name, in bold, so it is not taken for the user's own.
+        var head = left;
+        if (week.Who is { } who)
+        {
+            using var named = new Font(font, FontStyle.Bold);
+            var label = who + " · ";
+            Text(label, named, _palette.Accent, head, right);
+            head += Width(label, named);
+        }
+        Text("이번주 " + week.Since, font, _palette.Value, head, right);
         using var bold = new Font(font, FontStyle.Bold);
         var x = right;
         var total = $"{week.Account}%";

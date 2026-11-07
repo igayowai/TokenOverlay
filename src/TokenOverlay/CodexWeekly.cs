@@ -133,9 +133,13 @@ internal static class CodexWeeklyMath
 // Reads the weekly readings out of this PC's Codex logs (read-only), off the UI thread, about once a minute,
 // and asks Codex itself for the current percent in between (see CodexUsageApi). The first pass reads the last
 // eight days of logs; later passes only what was added. The asked readings are kept in a small file of its own.
+// accounts: which account Codex was on when (AccountBook). The user's week and what goes to the share leave out the
+// readings taken while another account was in use; while one is, the footer is that account's week.
 internal sealed class CodexWeeklyMonitor(IReadOnlyList<string> roots, Func<DriveShare?>? shareSource = null,
-    Func<DateTimeOffset, UsageApiResult>? api = null, string? store = null) : IDisposable
+    Func<DateTimeOffset, UsageApiResult>? api = null, string? store = null, AccountBook? accounts = null) : IDisposable
 {
+    private bool Mine(long ms) => accounts?.IsMine(AccountBook.Codex, ms) ?? true;
+
     internal static string DefaultStorePath => Path.Combine(AppPaths.DataFolder, "codex-weekly.json");
     private static readonly TimeSpan Tick = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan ApiActiveInterval = TimeSpan.FromSeconds(55);
@@ -168,9 +172,9 @@ internal sealed class CodexWeeklyMonitor(IReadOnlyList<string> roots, Func<Drive
     private long _sharedLast = -1;
     private int _sharedCount = -1;
 
-    public CodexWeeklyMonitor(string sessionRoot, Func<DriveShare?>? shareSource) : this(
+    public CodexWeeklyMonitor(string sessionRoot, Func<DriveShare?>? shareSource, AccountBook? accounts = null) : this(
         [sessionRoot, Path.Combine(Directory.GetParent(sessionRoot)?.FullName ?? sessionRoot, "archived_sessions")], shareSource,
-        CodexUsageApi.Fetch, DefaultStorePath) { }
+        CodexUsageApi.Fetch, DefaultStorePath, accounts) { }
 
     // One-minute readings asked from Codex. Off: only the percent Codex logs with this PC's requests.
     public bool ApiEnabled => _apiEnabled;
@@ -229,10 +233,12 @@ internal sealed class CodexWeeklyMonitor(IReadOnlyList<string> roots, Func<Drive
         var oldest = (now - Kept).ToUnixTimeMilliseconds();
         foreach (var at in _samples.Keys.TakeWhile(at => at < oldest).ToArray()) _samples.Remove(at);
         if (_apiSamples.RemoveAll(s => s.AtMs < oldest) > 0) _dirty = true;
-        var own = _samples.Values.ToArray();
-        AskApi(now, own);
-        var merged = new SortedDictionary<long, CodexWeeklySample>(_samples);
-        foreach (var sample in _apiSamples) merged.TryAdd(sample.AtMs, sample);
+        var all = _samples.Values.ToArray();
+        // Asked as often while anyone is using Codex here: the answer is for the account in use.
+        AskApi(now, all);
+        var own = all.Where(s => Mine(s.AtMs)).ToArray();
+        var merged = new SortedDictionary<long, CodexWeeklySample>(own.ToDictionary(s => s.AtMs));
+        foreach (var sample in _apiSamples.Where(s => Mine(s.AtMs))) merged.TryAdd(sample.AtMs, sample);
         // The same time line where only this PC's requests count as busy: this PC's part alone.
         var alone = new SortedDictionary<long, CodexWeeklySample>(merged);
         var mine = false;
@@ -297,11 +303,25 @@ internal sealed class CodexWeeklyMonitor(IReadOnlyList<string> roots, Func<Drive
         _footer = week is null ? null : CodexWeeklyMath.Line(week, mine ? share?.SplitNames() : null, people.Count == 0 ? null : people)
             + "\n" + WeeklyUsageMath.ResetLine(week.ResetMs, now)
             + (_apiEnabled && _resetCredits is int credits ? $" · 리셋 크레딧 {credits}개" : "");
+        ShowOther(now);
         if (week is not null) DiagnosticLog.Change("codex-week", $"started {DateTimeOffset.FromUnixTimeMilliseconds(week.StartMs).ToLocalTime():MM-dd HH:mm} · ends {DateTimeOffset.FromUnixTimeMilliseconds(week.ResetMs).ToLocalTime():MM-dd HH:mm}");
         DiagnosticLog.Change("codex-weekly", week is null ? $"no running week ({own.Length} readings)" : $"week known · {merged.Count} readings · other devices {(mine ? "yes" : "no")}");
         DiagnosticLog.Change("codex-weekly-api", ApiStatus);
         DiagnosticLog.Change("codex-weekly-line", _footer?.Split('\n')[0] ?? "none");
         Save(now, force: false);
+    }
+
+    // While another account is in use the footer is its week: the readings logged and asked while it was in use.
+    private void ShowOther(DateTimeOffset now)
+    {
+        if (accounts is not { } book || book.MineNow(AccountBook.Codex) || book.Current(AccountBook.Codex) is not { } other) return;
+        bool Theirs(long ms) => book.At(AccountBook.Codex, ms)?.Key == other.Key;
+        var theirs = new SortedDictionary<long, CodexWeeklySample>(_samples.Values.Where(s => Theirs(s.AtMs)).ToDictionary(s => s.AtMs));
+        foreach (var sample in _apiSamples.Where(s => Theirs(s.AtMs))) theirs.TryAdd(sample.AtMs, sample);
+        _footer = CodexWeeklyMath.Week(theirs.Values.ToArray(), now) is { } week
+            ? WeeklySplit.Named(other.Name, CodexWeeklyMath.Line(week)) + "\n" + WeeklyUsageMath.ResetLine(week.ResetMs, now)
+                + (_apiEnabled && _resetCredits is int credits ? $" · 리셋 크레딧 {credits}개" : "")
+            : WeeklySplit.Unknown(other.Name, "Codex");
     }
 
     private void AskApi(DateTimeOffset now, CodexWeeklySample[] own)

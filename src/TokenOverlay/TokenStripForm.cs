@@ -230,6 +230,7 @@ internal sealed partial class TokenStripForm : Form
     internal static int WeeklyGap(Font font) => Math.Max(6, font.Height * 3 / 5);
     internal static int WeeklyHeadWidth(WeeklySplit.Bar bar, Font font, Font bold) =>
         AutoCapsule.Width("이번주 " + bar.Since, font) + 2
+        + (bar.Who is { } who ? AutoCapsule.Width(who + " · ", bold) + 2 : 0)
         + bar.Parts.Sum(part => WeeklyGap(font) + WeeklyDot(font) + WeeklyDot(font) / 2 + AutoCapsule.Width($"{part.Name} {part.Percent}%", font) + 2)
         + WeeklyGap(font) + AutoCapsule.Width("계정 ", font) + 2 + AutoCapsule.Width($"{bar.Account}%", bold) + 2;
 
