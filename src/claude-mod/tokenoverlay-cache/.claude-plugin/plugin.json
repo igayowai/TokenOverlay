@@ -1,0 +1,5 @@
+{
+  "name": "tokenoverlay-cache",
+  "version": "0.1.0",
+  "description": "TokenOverlay 짝 확장: 오버레이에서 누른 세션에 캐시 유지 핑을 한 번 보내고, 압축 안 한 큰 세션을 캐시 만료 5분 전에 압축함"
+}
