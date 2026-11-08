@@ -34,7 +34,8 @@ internal sealed record CodexWindowInfo(
     IntRect? CaptionButtonBounds,
     IntRect WorkingArea,
     uint Dpi,
-    WindowChromeMetrics ChromeMetrics);
+    WindowChromeMetrics ChromeMetrics,
+    bool Maximized = false);
 
 internal enum OverlayVisualState { Collapsed, Expanded, HiddenForSpace }
 internal enum CollapsedDisplayMode { TwoFields, PrimaryOnly }
@@ -49,7 +50,9 @@ internal sealed record OverlayLayoutRequest(
     Point? ManualCapsuleCenter = null,
     int ScalePercent = ManualAttachmentRules.DefaultScalePercent,
     OverlayPresentation? Presentation = null,
-    bool CompactPanel = false);
+    bool CompactPanel = false,
+    // How far below the window's top an inside-top-right capsule (or its ring) starts; Codex's sits under its header row.
+    int HeaderOffsetDip = OverlayLayoutCalculator.DefaultHeaderOffsetDip);
 
 internal sealed record OverlayLayoutResult(
     OverlayVisualState State,
@@ -113,7 +116,9 @@ internal static class OverlayLayoutCalculator
 
     private const int LegacyOutsideGapDip = 10;
     private const int LegacyInsideMarginDip = 18;
-    private const int LegacyHeaderOffsetDip = 56;
+    internal const int DefaultHeaderOffsetDip = 56;
+    // Codex's header row (chat title, ⋯, list and panel buttons) ends about 76 dip down; 92 keeps clear of it.
+    internal const int CodexHeaderOffsetDip = 92;
     private const int LegacyBottomOffsetDip = 70;
 
     public static OverlayLayoutResult Calculate(OverlayLayoutRequest request)
@@ -595,7 +600,7 @@ internal static class OverlayLayoutCalculator
         else
         {
             capsuleX = visibleHost.Right - capsuleWidth - insideMargin;
-            capsuleY = visibleHost.Top + ScaleSystemDip(LegacyHeaderOffsetDip, dpi);
+            capsuleY = visibleHost.Top + ScaleSystemDip(request.HeaderOffsetDip, dpi);
         }
 
         capsuleX = Clamp(capsuleX, workingArea.Left + outsideGap, workingArea.Right - capsuleWidth - outsideGap);

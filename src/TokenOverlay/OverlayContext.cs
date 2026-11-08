@@ -706,16 +706,21 @@ internal sealed partial class OverlayContext : ApplicationContext
 
     private OverlayLayoutResult CalculateLayout(CodexWindowTarget target, Point? manualCenter)
     {
-        // Each app uses its own configured anchor, except Codex's home screen (new chat), whose wide
-        // composer and model picker fill the bottom-right corner: there the capsule goes top right.
-        // The home page is titled with the app name; a chat page carries the chat's title.
         var chosen = InnerAnchor(_settings.AnchorFor(target.App),
             target.App == HostApp.Claude ? _pendingPanes.FirstOrDefault(p => p.Focused) : null);
-        var anchor = chosen == AnchorMode.InsideBottomRight && target.App == HostApp.Codex
-            && IsCodexHomeTitle(_pendingVisibleTitle)
-            ? AnchorMode.InsideTopRight : chosen;
-        return OverlayLayoutCalculator.Calculate(CreateLayoutRequest(target.HostWindow, anchor, manualCenter));
+        var anchor = target.App == HostApp.Codex
+            ? CodexAnchor(chosen, IsCodexHomeTitle(_pendingVisibleTitle), target.HostWindow.Maximized) : chosen;
+        var request = CreateLayoutRequest(target.HostWindow, anchor, manualCenter);
+        if (target.App == HostApp.Codex) request = request with { HeaderOffsetDip = OverlayLayoutCalculator.CodexHeaderOffsetDip };
+        return OverlayLayoutCalculator.Calculate(request);
     }
+
+    // Each app uses its own configured anchor. Codex's bottom right moves to the top right (under the header row) on its
+    // home screen (new chat), whose wide composer and model picker fill that corner, and in a window that is not
+    // maximized, where the capsule would cover the composer (user's choice, 2026-11-08). The home page is titled with
+    // the app name; a chat page carries the chat's title.
+    internal static AnchorMode CodexAnchor(AnchorMode chosen, bool home, bool maximized) =>
+        chosen == AnchorMode.InsideBottomRight && (home || !maximized) ? AnchorMode.InsideTopRight : chosen;
 
     // A capsule moved inward, into a split-view pane left of another or a chat column beside a side panel, sits at
     // that area's top right rather than its bottom right, where it would cover the composer next to the boundary.

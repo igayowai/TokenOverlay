@@ -84,6 +84,10 @@ internal static class CodexWindowLocator
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsZoomed(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowPlacement(IntPtr windowHandle, ref NativeWindowPlacement placement);
 
     [DllImport("user32.dll")]
@@ -635,7 +639,8 @@ internal static class CodexWindowLocator
             captionButtonBounds,
             workingArea,
             dpi,
-            chromeMetrics);
+            chromeMetrics,
+            IsZoomed(windowHandle));
         return true;
     }
 

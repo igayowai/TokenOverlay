@@ -75,6 +75,21 @@ internal static class ClaudeChecks
             && OverlayContext.InnerAnchor(AnchorMode.InsideBottomRight, null) == AnchorMode.InsideBottomRight
             && OverlayContext.InnerAnchor(AnchorMode.TitleBarTopRight, new ClaudePane(280, -1057, "a", null, false)) == AnchorMode.TitleBarTopRight,
             "bottom-right capsule moved inward (left pane, chat beside a side panel) goes to the top right; the rightmost pane keeps its corner");
+        Check(OverlayContext.CodexAnchor(AnchorMode.InsideBottomRight, home: false, maximized: false) == AnchorMode.InsideTopRight
+            && OverlayContext.CodexAnchor(AnchorMode.InsideBottomRight, home: false, maximized: true) == AnchorMode.InsideBottomRight
+            && OverlayContext.CodexAnchor(AnchorMode.InsideBottomRight, home: true, maximized: true) == AnchorMode.InsideTopRight
+            && OverlayContext.CodexAnchor(AnchorMode.TitleBarTopRight, home: false, maximized: false) == AnchorMode.TitleBarTopRight
+            && OverlayContext.CodexAnchor(AnchorMode.Auto, home: true, maximized: false) == AnchorMode.Auto,
+            "Codex: bottom right goes top right on the home screen and in a window that is not maximized; other choices kept");
+        // The user's Codex window as measured on 2026-11-08: 1920x1500 at 250%, not maximized.
+        var codexSmall = new CodexWindowInfo(new IntPtr(2), new IntRect(0, 0, 1920, 1500), new IntRect(0, 0, 1920, 1500),
+            null, new IntRect(0, 0, 3840, 2100), 240, default);
+        var underHeader = OverlayLayoutCalculator.Calculate(new OverlayLayoutRequest(codexSmall, AnchorMode.InsideTopRight, false, 0, false,
+            HeaderOffsetDip: OverlayLayoutCalculator.CodexHeaderOffsetDip));
+        var plainTop = OverlayLayoutCalculator.Calculate(new OverlayLayoutRequest(codexSmall, AnchorMode.InsideTopRight, false, 0, false));
+        Check(underHeader.State == OverlayVisualState.Collapsed && underHeader.WindowBounds.Y == 230 && plainTop.WindowBounds.Y == 140
+            && underHeader.WindowBounds.Right == plainTop.WindowBounds.Right,
+            $"Codex top right starts under the header row, 92 dip down (230 px at 250%; was {underHeader.WindowBounds.Y}, default {plainTop.WindowBounds.Y})");
 
         Check(ModelNames.Short("claude-opus-5-5") == "Opus 5.5" && ModelNames.Short("claude-haiku-4-5-20251001") == "Haiku 4.5"
             && ModelNames.Short("gpt-6-astra") == "6 Astra" && ModelNames.Short("claude-fable-5-1[1m]+") == "Fable 5.1+"
