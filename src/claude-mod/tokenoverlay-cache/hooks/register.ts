@@ -14,6 +14,8 @@ import type { EngineInterface, Register } from 'claude-code'
 // compacted 5 minutes before its one-hour cache lapses, while the summary can still be read from the cache.
 // While 유지 is on the mod pings by itself 10 minutes before the lapse, and once more 4 minutes later if that failed;
 // the compaction stays the last resort should both fail.
+// A main turn that ends answered with a large context is compacted then (TokenOverlay decides when), where nothing is in
+// flight: 68% of the engine's own compactions came in the middle of a turn (2026-11-09 study, KB X-3127/X-3128).
 
 const TICK_MS = 30_000
 const TTL_MS = 60 * 60_000
@@ -24,22 +26,29 @@ const KEEP_RETRY_AT_MS = 54 * 60_000
 const LARGE_CONTEXT = 150_000
 // As long as the overlay still takes a report as alive (CacheWatch.PartnerFresh): it asks only a session that reports.
 const REQUEST_WAITS_MS = 2 * 60_000
+// Turn-end compaction (350k since 2026-11-10, first 400k from X-3127) is TokenOverlay's to decide (CacheWatch.TurnEnds): it asks through
+// <session>.compact with a `turnend-` id. Builds 8 and 9 compacted 1 second after each answer by themselves; the user
+// found that a message sent meanwhile waited behind it, and that a session still waiting on background work was
+// compacted (2026-11-10), so the overlay now waits for quiet and for that work, and changes without a restart.
+const TURN_END_PREFIX = 'turnend-'
 const PING_PROMPT = '캐시 유지용 확인임. 도구를 쓰지 말고 ok 한 단어로만 답할 것.'
 const COMPACT_INSTRUCTIONS = '자리를 비운 동안 캐시가 식기 전에 하는 압축임. 목표, 진행 상황, 바꾼 파일, 정해진 것과 남은 결정, 다음 할 일을 남길 것.'
 const ASKED_INSTRUCTIONS = '사용자가 오버레이의 압축 버튼으로 요청한 압축임. 목표, 진행 상황, 바꾼 파일, 정해진 것과 남은 결정, 다음 할 일을 남길 것.'
+const TURN_END_INSTRUCTIONS = '턴이 끝난 안전 지점에서 하는 압축임. 목표, 진행 상황, 바꾼 파일, 정해진 것과 남은 결정, 다음 할 일을 남길 것.'
 
 type Ping = { request: string; at: number; ok: boolean; read?: number; write?: number; reason?: string; auto?: boolean }
 type Compact = { request: string; at: number; ok: boolean; reason?: string }
 // api: $.session.compact; command: /compact run as if typed. A call that answers well has not always compacted
 // (2026-10-29, a session whose log never got the compaction), so the overlay checks the log and may ask a retry.
 type Via = 'api' | 'command'
-type Attempt = { at: number; by: 'auto' | 'asked' | 'retry'; done?: number; via?: Via; ok?: boolean; reason?: string }
+type Attempt = { at: number; by: 'auto' | 'asked' | 'retry' | 'turnend'; done?: number; via?: Via; ok?: boolean; reason?: string }
 // autoTried: the idle stretch (its lastAt) the automatic compaction was tried in. Kept apart from `compacted`, which a
 // failed asked or retried compaction clears: on 2026-11-07 that let the automatic one run again 30 seconds later, five
-// times a stretch, in a session where both ways were refused.
+// times a stretch, in a session where both ways were refused. turnEndTried: the same for the turn-end compaction, by
+// the last request of the turn it followed.
 type Kept = {
   lastAt: number; context: number; compacted: boolean; handled: string; ping?: Ping; compactedAt?: number
-  compactHandled?: string; compact?: Compact; attempt?: Attempt; autoTried?: number
+  compactHandled?: string; compact?: Compact; attempt?: Attempt; autoTried?: number; turnEndTried?: number
 }
 
 let sessionId = ''
@@ -53,14 +62,33 @@ let measured: { window?: number; threshold?: number } = {}
 // 유지: until when the overlay asked (0 when off), and the pings tried in the current idle stretch.
 let keepUntil = 0
 let tries = { stretch: 0, count: 0 }
+// The claude.exe this session runs in (0 until known), so the overlay can name the session that started a busy
+// program: a session the desktop app starts fresh has no id on its command line (2026-11-09).
+let pid = 0
+
+// The parent of a process run without a shell is this session's own process.
+async function findPid($: EngineInterface) {
+  try {
+    const result = await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+      '(Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId'], { timeoutMs: 30_000 })
+    const found = Number(result.stdout.trim())
+    if (result.exitCode === 0 && Number.isInteger(found) && found > 0) pid = found
+  } catch (error) {
+    $.ui.log(`tokenoverlay-cache: 세션 프로세스 번호를 못 찾음 (${String(error)})`)
+  }
+}
 
 async function keep($: EngineInterface) {
   if (!sessionId || !folder) return
   // code: which build of this mod a session runs (2: compaction falls back to /compact, 3: 유지, 4: 압축 on request,
   // 5: attempts reported and retried the other way, 6: state read back from the report, 7: one automatic compaction
-  // per idle stretch, a stopped session's refusal reported as such), since edits reach a running session only on a
-  // restart.
-  const report = { v: 1, code: 7, sessionId, aliveAt: await $.clock.now(), busy, ...kept, ...measured, ...(keepUntil ? { keepUntil } : {}) }
+  // per idle stretch, a stopped session's refusal reported as such, 8: turn-end compaction at 400k, busy kept by the
+  // main loop alone, 9: the session's process id, 10: turn-end compaction asked by the overlay alone, 11: its
+  // instructions without the size, which the overlay now sets), since edits
+  // reach a running session only on a restart.
+  const report = {
+    v: 1, code: 11, sessionId, aliveAt: await $.clock.now(), busy, ...kept, ...measured, ...(keepUntil ? { keepUntil } : {}), ...(pid ? { pid } : {}),
+  }
   await $.fs.write(`${folder}\\${sessionId}.json`, JSON.stringify(report))
 }
 
@@ -75,6 +103,7 @@ async function restore($: EngineInterface) {
     lastAt: r.lastAt, context: r.context ?? 0, compacted: r.compacted === true, handled: r.handled ?? '', ping: r.ping,
     compactedAt: r.compactedAt, compactHandled: r.compactHandled, compact: r.compact, attempt: r.attempt,
     autoTried: typeof r.autoTried === 'number' ? r.autoTried : undefined,
+    turnEndTried: typeof r.turnEndTried === 'number' ? r.turnEndTried : undefined,
   }
 }
 
@@ -201,8 +230,8 @@ async function tick($: EngineInterface) {
         kept.ping = await ping($, id, now)
       }
     }
-    // 압축 asked from the overlay: run once the session is not answering, whatever its size or cache. A retry the
-    // overlay asks takes the other way than the attempt it follows.
+    // 압축 asked from the overlay (the person's button, or its turn-end rule): run once the session is not answering,
+    // whatever its size or cache. A retry the overlay asks takes the other way than the attempt it follows.
     const compactAsk = `${folder}\\${sessionId}.compact`
     if (!busy && (await $.fs.exists(compactAsk))) {
       const id = (await $.fs.read(compactAsk)).trim()
@@ -210,8 +239,11 @@ async function tick($: EngineInterface) {
         kept.compactHandled = id
         kept.compacted = true
         const retry = id.startsWith('retry-')
-        const instructions = retry && kept.attempt?.by === 'auto' ? COMPACT_INSTRUCTIONS : ASKED_INSTRUCTIONS
-        const result = await compact($, instructions, now, retry ? 'retry' : 'asked', retry ? kept.attempt?.via : undefined)
+        const turnEnd = id.startsWith(TURN_END_PREFIX)
+        const instructions = turnEnd ? TURN_END_INSTRUCTIONS : !retry ? ASKED_INSTRUCTIONS
+          : kept.attempt?.by === 'auto' ? COMPACT_INSTRUCTIONS : kept.attempt?.by === 'turnend' ? TURN_END_INSTRUCTIONS : ASKED_INSTRUCTIONS
+        const by: Attempt['by'] = turnEnd ? 'turnend' : retry ? 'retry' : 'asked'
+        const result = await compact($, instructions, now, by, retry ? kept.attempt?.via : undefined)
         kept.compact = { request: id, at: now, ok: result.ok, reason: result.reason }
         if (!result.ok) kept.compacted = false
       }
@@ -254,16 +286,19 @@ export const register: Register = on => {
     try { await seed($) } catch (error) { $.ui.log(`tokenoverlay-cache: 마지막 요청 시각을 못 찾음 (${String(error)})`) }
     $.clock.every(TICK_MS, () => { void tick($) })
     await keep($)
+    void findPid($).then(() => keep($))
     return result
   })
 
+  // The main loop's turns alone: a subagent's run ending inside a main turn must not mark the session idle.
   on('turn.start', ($, e, next) => {
-    busy = true
+    if (!e.agentId) busy = true
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId) return result
     busy = false
     await measure($)
     await keep($)

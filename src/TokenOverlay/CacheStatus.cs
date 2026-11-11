@@ -46,7 +46,7 @@ internal static class CacheStatus
             case double left when left > 0: parts.Add($"캐시 곧 만료 · {Math.Ceiling(left):0}분 남음"); break;
             case double when state.Compacted: parts.Add("캐시 만료(추정) · 압축됨 · 다시 보내면 요약부터 새로 저장"); break;
             case double:
-                parts.Add($"캐시 만료(추정) · 다시 보내면 {OverlayPresentationBuilder.FormatTokenCount(state.LastContext)} 전체 재저장");
+                parts.Add($"캐시 만료(추정) · 다시 보내면 {OverlayPresentationBuilder.FormatContextCount(state.LastContext)} 전체 재저장");
                 break;
         }
         if (state.Compacted && !(RemainingMinutes(state, now) <= 0)) parts.Add("압축됨 · 다음 요청 때 새로 저장");
@@ -64,7 +64,7 @@ internal static class CacheStatus
         double left when left > 0 => $"캐시 {Math.Ceiling(left):0}분 남음",
         double when state!.Compacted => "캐시 만료 · 압축됨",
         // The count is drawn under the turn's token count; the panel line says it is the rebuild.
-        double when state!.LastContext > 0 => $"캐시 만료 {OverlayPresentationBuilder.FormatTokenCount(state.LastContext)}",
+        double when state!.LastContext > 0 => $"캐시 만료 {OverlayPresentationBuilder.FormatContextCount(state.LastContext)}",
         _ => null,
     };
 

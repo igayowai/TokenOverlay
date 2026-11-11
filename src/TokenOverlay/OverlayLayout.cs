@@ -79,6 +79,9 @@ internal sealed record OverlayLayoutResult(
     public IntRect RamBarBounds { get; init; }
     public IntRect PageBarBounds { get; init; }
     public bool FullTopRow => !CpuBarBounds.IsEmpty;
+    // With the meters, a thin line above their row (2026-11-09): the program group using the most CPU and the Claude
+    // session that started it, a divider under it. Empty without the meters.
+    public IntRect TopLineBounds { get; init; }
 
     public bool ContainsClientPoint(Point point) =>
         CapsuleBounds.Contains(point.X, point.Y) || PanelBounds.Contains(point.X, point.Y);
@@ -100,8 +103,10 @@ internal static class OverlayLayoutCalculator
     // A list without turns is only as wide as its footer.
     // The session list is as wide as its rows (or its footer).
     private static int PanelWidth(OverlayLayoutRequest request, uint dpi, int scalePercent) => request.CompactPanel
-        ? request.Presentation?.Sessions is not null ? Math.Max(TokenStripForm.SessionListWidth(request.Presentation, dpi, scalePercent),
-            TokenStripForm.HistoryFooterWidth(request.Presentation, dpi, scalePercent))
+        ? request.Presentation?.Sessions is not null ? Math.Max(Math.Max(TokenStripForm.SessionListWidth(request.Presentation, dpi, scalePercent),
+            TokenStripForm.HistoryFooterWidth(request.Presentation, dpi, scalePercent)),
+            request.Presentation.History.Count == 0 ? 0
+                : ScaleOverlayDip(HistoryFixedWidthDip, dpi, scalePercent) + TokenStripForm.HistoryNameWidth(request.Presentation, dpi, scalePercent))
         : request.Presentation?.History.Count is null or 0 ? TokenStripForm.HistoryFooterWidth(request.Presentation, dpi, scalePercent)
         : Math.Max(ScaleOverlayDip(HistoryFixedWidthDip, dpi, scalePercent) + TokenStripForm.HistoryNameWidth(request.Presentation, dpi, scalePercent),
             TokenStripForm.HistoryFooterWidth(request.Presentation, dpi, scalePercent))
@@ -161,7 +166,11 @@ internal static class OverlayLayoutCalculator
         var shown = bars.Length;
         while (shown > 0 && bars[shown - 1].Right + 2 * margin + note + ring > capsule.Width) shown--;
         if (shown == 0 && ring == 0) return result;
-        IntRect Bar(int i) => i < shown ? new(capsule.X + bars[i].X, capsule.Y + bars[i].Y, bars[i].Width, bars[i].Height) : default;
+        // The CPU line over the meters' row; the row and all under it move down by it.
+        var line = shown > 0 ? AutoCapsule.TopLineHeight(result.Dpi, result.ScalePercent) : 0;
+        rise += line;
+        var top = capsule.Y + line;
+        IntRect Bar(int i) => i < shown ? new(capsule.X + bars[i].X, top + bars[i].Y, bars[i].Width, bars[i].Height) : default;
         var window = result.WindowBounds;
         return result with
         {
@@ -169,11 +178,12 @@ internal static class OverlayLayoutCalculator
             CapsuleBounds = capsule with { Y = capsule.Y + rise },
             // Flush with the capsule's right edge, so the two read as one right-aligned column; with the meter the
             // module is as wide as the capsule.
-            RingModuleBounds = shown > 0 ? new IntRect(capsule.X, capsule.Y, capsule.Width, diameter)
-                : new IntRect(capsule.Right - diameter - note, capsule.Y, note + diameter, diameter),
-            RingBounds = ring == 0 ? default : new IntRect(capsule.Right - diameter, capsule.Y, diameter, diameter),
-            RingNoteBounds = note == 0 ? default : new IntRect(capsule.Right - diameter - note, capsule.Y, note, diameter),
+            RingModuleBounds = shown > 0 ? new IntRect(capsule.X, top, capsule.Width, diameter)
+                : new IntRect(capsule.Right - diameter - note, top, note + diameter, diameter),
+            RingBounds = ring == 0 ? default : new IntRect(capsule.Right - diameter, top, diameter, diameter),
+            RingNoteBounds = note == 0 ? default : new IntRect(capsule.Right - diameter - note, top, note, diameter),
             CpuBarBounds = Bar(0), RamBarBounds = Bar(1), PageBarBounds = Bar(2),
+            TopLineBounds = line == 0 ? default : new IntRect(capsule.X, capsule.Y, capsule.Width, line),
         };
     }
 
@@ -201,7 +211,8 @@ internal static class OverlayLayoutCalculator
         if (request.AnchorMode != AnchorMode.InsideTopRight || request.Presentation is not { } p || !HasTopRow(p)) return request;
         var host = request.HostWindow;
         var scale = ManualAttachmentRules.SanitizeScale(request.ScalePercent);
-        var rise = AutoCapsule.RingSize(host.Dpi, scale).Disc + Math.Max(2, OverlayRenderMetrics.Create(host.Dpi, scale).MetricGap / 2);
+        var rise = AutoCapsule.RingSize(host.Dpi, scale).Disc + Math.Max(2, OverlayRenderMetrics.Create(host.Dpi, scale).MetricGap / 2)
+            + (p.CpuMeter ? AutoCapsule.TopLineHeight(host.Dpi, scale) : 0);
         IntRect Lower(IntRect r) => r.IsEmpty ? r : new(r.X, r.Y + rise, r.Width, Math.Max(1, r.Height - rise));
         return request with { HostWindow = host with { WindowBounds = Lower(host.WindowBounds), ExtendedFrameBounds = Lower(host.ExtendedFrameBounds) } };
     }

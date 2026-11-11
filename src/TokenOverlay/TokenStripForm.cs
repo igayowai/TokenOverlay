@@ -207,7 +207,7 @@ internal sealed partial class TokenStripForm : Form
             var columns = MeasureSessions(rows, label, value);
             var bounds = layout.PanelBounds.ToRectangle();
             var right = bounds.Right - metrics.PanelPadding;
-            var top = bounds.Bottom - metrics.PanelPadding - (layout.ExpandedRowHeight * _presentation.HistoryPanelRows);
+            var top = bounds.Bottom - metrics.PanelPadding - (layout.ExpandedRowHeight * (_presentation.HistoryPanelRows - _presentation.SessionsTopRow));
             var inset = Math.Max(2, layout.ExpandedRowHeight / 7);
             var height = layout.ExpandedRowHeight - (2 * inset);
             return rows.SelectMany((row, index) =>
@@ -476,16 +476,31 @@ internal sealed partial class TokenStripForm : Form
 
     // The capsule and the full-width row on it, as one rectangle.
     internal static Rectangle CapsuleWithRow(OverlayLayoutResult layout) => Rectangle.FromLTRB(layout.CapsuleBounds.Left,
-        layout.RingModuleBounds.Top, layout.CapsuleBounds.Right, layout.CapsuleBounds.Bottom);
+        layout.TopLineBounds.IsEmpty ? layout.RingModuleBounds.Top : layout.TopLineBounds.Top, layout.CapsuleBounds.Right, layout.CapsuleBounds.Bottom);
 
-    // The meters' readings (0 to 1, null before the first one or when Windows gives none): CPU, memory, page file. Only
-    // a meter whose whole percent changes is redrawn.
-    private double? _cpuFill, _ramFill, _pageFill;
+    // The CPU line's text (null: nothing known yet). Redrawn only when it changes.
+    private string? _topLine;
+    internal string? TopLine => _topLine;
+    // The program file whose icon replaces the line's first word (CpuTop.Logo), and that icon at the size last drawn.
+    private string? _topLogo;
+    private (string Path, int Size, Bitmap? Image)? _topLogoImage;
+    public void SetTopLine(string? text, string? logo = null)
+    {
+        if (text == _topLine && logo == _topLogo) return;
+        _topLine = text;
+        _topLogo = logo;
+        if (CurrentLayout is { TopLineBounds.IsEmpty: false } l) Invalidate(l.TopLineBounds.ToRectangle());
+    }
+
+    // The meters' readings (0 to 1, null before the first one or when Windows gives none): CPU, memory, and the
+    // graphics card's fan speed and temperature. Only a meter whose whole percent (or temperature) changes is redrawn.
+    private double? _cpuFill, _ramFill;
+    private GpuReading? _gpu;
     internal double? CpuFill => _cpuFill;
     internal double? RamFill => _ramFill;
-    internal double? PageFill => _pageFill;
+    internal GpuReading? Gpu => _gpu;
 
-    public void SetMeters(double? cpu, double? ram, double? page)
+    public void SetMeters(double? cpu, double? ram, GpuReading? gpu)
     {
         var layout = CurrentLayout is { FullTopRow: true } l ? l : null;
         void Set(ref double? field, double? fill, IntRect bar)
@@ -496,7 +511,9 @@ internal sealed partial class TokenStripForm : Form
         }
         Set(ref _cpuFill, cpu, layout?.CpuBarBounds ?? default);
         Set(ref _ramFill, ram, layout?.RamBarBounds ?? default);
-        Set(ref _pageFill, page, layout?.PageBarBounds ?? default);
+        var gpuChanged = GpuReading.Label(gpu) != GpuReading.Label(_gpu) || CpuPercent(gpu?.Fill) != CpuPercent(_gpu?.Fill);
+        _gpu = gpu;
+        if (gpuChanged && layout is { } shown && !shown.PageBarBounds.IsEmpty) Invalidate(shown.PageBarBounds.ToRectangle());
     }
 
     internal static int? CpuPercent(double? fill) => fill is double f ? (int)Math.Round(Math.Clamp(f, 0, 1) * 100) : null;
@@ -839,6 +856,7 @@ internal sealed partial class TokenStripForm : Form
         {
             CancelEditGesture();
             _hoverTimer.Dispose();
+            _topLogoImage?.Image?.Dispose();
             Region?.Dispose();
             Region = null;
         }

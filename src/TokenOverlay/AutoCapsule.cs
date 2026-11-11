@@ -79,7 +79,8 @@ internal static class AutoCapsule
         var margin = Math.Max(2, line / 10);
         return ((int)Math.Round(RingLines * line) + 2 * margin, margin);
     }
-    // The widest share a meter shows inside its bar: the bar is never narrower than it.
+    // The widest share a meter shows inside its bar: the bar is never narrower than it. A wider number (the commit's GB
+    // to one decimal, "147.2") is drawn in a smaller type to fit (TokenStripForm.DrawMeter).
     internal const string MeterNumberSample = "100";
     // Meter bars have Task Manager's tray icon's proportions, 7 wide to 8 tall.
     internal const double MeterAspect = 7 / 8.0;
@@ -101,6 +102,14 @@ internal static class AutoCapsule
     }
     // The share inside a meter's bar.
     public static Font MeterFont(uint dpi, int scale) => PixelFont("Segoe UI Semibold", 11, dpi, scale);
+    // The CPU line over the meters: smaller than the labels, one line, with a little room under it for the divider.
+    // 10 points, as the labels: 8 and then 9 were asked bigger on 2026-11-09.
+    public static Font TopLineFont(uint dpi, int scale) => PixelFont("Segoe UI", 10, dpi, scale);
+    internal static int TopLineHeight(uint dpi, int scale)
+    {
+        using var font = TopLineFont(dpi, scale);
+        return TextRenderer.MeasureText("CPU 1위 가Ag", font, Size.Empty, Flags).Height + 3 * Math.Max(2, RingSize(dpi, scale).Margin);
+    }
     // The width the ring's lines take in the ring module: the widest line with a margin each side, or nothing.
     internal static int RingNoteWidth(uint dpi, int scale, string? note)
     {

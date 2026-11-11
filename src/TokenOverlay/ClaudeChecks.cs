@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 
 namespace TokenOverlay;
@@ -773,6 +773,9 @@ internal static class ClaudeChecks
                 && pingForm.Line(Row(alive, true) with { LapsesAt = wallNow.AddMinutes(4.2) }, wallNow) is { Left: "5분 남음 · 301K", Soon: true },
                 "cache window: each row says what the mod will do or did, and only a session running the mod can be pinged");
             Check(pingForm.Line(Row(older, true), wallNow) is { State: CachePings.UpdateText, CanPing: true }
+                // A build past the last one worth reloading for is not told to reload (build 9 only names its process).
+                && pingForm.Line(Row(alive with { Code = CacheWatch.ReloadHintCode }, true), wallNow).State != CachePings.UpdateText
+                && pingForm.Line(Row(alive with { Code = CacheWatch.ReloadHintCode - 1 }, true), wallNow).State == CachePings.UpdateText
                 && pingForm.Line(Row(older with { PingAt = pingAt, PingOk = true }, true), wallNow).State == pingAt.ToLocalTime().ToString("HH:mm") + " 핑함",
                 "cache window: a session on an older mod build is told to type /reload-plugins, unless a ping is to be told of");
             // 유지: the overlay writes until when (8 hours on), the mod of build 3 and up pings 10 minutes before each lapse.
@@ -863,6 +866,9 @@ internal static class ClaudeChecks
                 && CacheWatch.Outcome(hourAgo, Tried(4, "auto", 3.9, true), wallNow) == CacheWatch.Compaction.Failed
                 && CacheWatch.Outcome(hourAgo, Tried(0.5, "asked", 0.4, false, "failed"), wallNow) == CacheWatch.Compaction.Failed
                 && CacheWatch.Outcome(hourAgo, Tried(1, "retry", null, false), wallNow) == CacheWatch.Compaction.Retrying
+                // build 8's turn-end compaction is told like the automatic one
+                && CacheWatch.Outcome(hourAgo, Tried(1, "turnend", 0.5, true), wallNow) == CacheWatch.Compaction.Checking
+                && CacheWatch.Outcome(hourAgo, Tried(4, "turnend", 3.9, true), wallNow) == CacheWatch.Compaction.Failed
                 && CacheWatch.Outcome(hourAgo with { LastRequest = wallNow.AddMinutes(-0.2) }, Tried(1, "auto", 0.5, true), wallNow) == CacheWatch.Compaction.None
                 && CacheWatch.Outcome(hourAgo with { Compacted = true }, Tried(4, "auto", 3.9, true), wallNow) == CacheWatch.Compaction.None
                 && CacheWatch.Outcome(hourAgo, Tried(13 * 60, "auto", 13 * 60, true), wallNow) == CacheWatch.Compaction.None
@@ -944,6 +950,150 @@ internal static class ClaudeChecks
             var handAfter = handover.Line(Row(alive with { CompactHandled = handRequest, CompactOk = true }, true), handAt.AddSeconds(40));
             Check(handRunning is { State: "압축 중…", CanCompact: false } && handAfter.State == compactAt + " 자동 압축 예정",
                 "cache window: an asked 압축 is followed by the mod's attempt once taken up");
+
+            // Turn-end compaction asked by the overlay (2026-11-09): read off the end of the session's log.
+            var endRoot = Directory.CreateDirectory(Path.Combine(watchRoot.FullName, "turnend-root"));
+            var endProject = Directory.CreateDirectory(Path.Combine(endRoot.FullName, "C--work-end"));
+            string Said(string type, string? stop = null, string content = "text", bool side = false, bool meta = false) =>
+                JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["type"] = type, ["isSidechain"] = side, ["isMeta"] = meta,
+                    ["message"] = new Dictionary<string, object?> { ["role"] = type, ["stop_reason"] = stop, ["content"] = new[] { new { type = content } } }
+                });
+            string Sys(string subtype) => JsonSerializer.Serialize(new { type = "system", subtype });
+            bool Ended(string name, string[] lines, double quietSeconds = 0)
+            {
+                var path = Path.Combine(endProject.FullName, name + ".jsonl");
+                File.WriteAllLines(path, lines);
+                File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(-quietSeconds));
+                return CacheWatch.TurnEnded(path, DateTimeOffset.Now);
+            }
+            var prompt = Said("user");
+            var answered = Said("assistant", "end_turn");
+            var closing = Sys("stop_hook_summary");
+            Check(Ended("a", [prompt, Said("assistant", "tool_use", "tool_use"), Said("user", content: "tool_result"), answered, closing])
+                && !Ended("b", [prompt, Said("assistant", "tool_use", "tool_use"), Said("user", content: "tool_result")])
+                && !Ended("c", [prompt, answered, closing, prompt])
+                && Ended("d", [prompt, answered, closing, Said("user", meta: true), prompt, Sys("local_command"), JsonSerializer.Serialize(new { type = "custom-title" })])
+                && !Ended("e", [prompt, answered]) && Ended("f", [prompt, answered], quietSeconds: 20)
+                && Ended("g", [prompt, answered, closing, Said("assistant", "tool_use", "tool_use", side: true)])
+                && !Ended("h", [prompt, Said("assistant", "max_tokens"), closing])
+                && !Ended("i", [prompt, answered, closing, "{ half a line"]) && !CacheWatch.TurnEnded(Path.Combine(endProject.FullName, "none.jsonl"), DateTimeOffset.Now),
+                "turn end: a main turn counts as ended on an answer that ended it (closed by the stop hooks, or a quiet log) or a lone slash command; never on a prompt, a tool's result or another stop");
+
+            var endBridge = Directory.CreateDirectory(Path.Combine(watchRoot.FullName, "turnend-bridge")).FullName;
+            var endId = Guid.NewGuid().ToString();
+            var endLog = Path.Combine(endProject.FullName, endId + ".jsonl");
+            // The session's log, last written `quiet` minutes ago (the overlay waits for 2 minutes of quiet).
+            void Log(string[] lines, double quiet = 3)
+            {
+                File.WriteAllLines(endLog, lines);
+                File.SetLastWriteTimeUtc(endLog, DateTime.UtcNow.AddMinutes(-quiet));
+            }
+            Log([prompt, answered, closing]);
+            var endFile = Path.Combine(endBridge, endId + ".compact");
+            int Asked(CacheWatch watch, int code = 7, long context = 450_000, bool busy = false, bool compacted = false, object? attempt = null,
+                string handled = "", double lastAgo = 3.3, long threshold = 0)
+            {
+                File.WriteAllText(Path.Combine(endBridge, endId + ".json"), JsonSerializer.Serialize(new
+                {
+                    v = 1, code, sessionId = endId, aliveAt = Ms(0.1), busy, lastAt = Ms(lastAgo), context, compacted, handled = "", compactHandled = handled, attempt,
+                    threshold
+                }));
+                return watch.TurnEnds(DateTimeOffset.Now, endRoot.FullName, endBridge);
+            }
+            int Fresh(Func<CacheWatch, int> ask) { if (File.Exists(endFile)) File.Delete(endFile); return ask(new CacheWatch(start: false)); }
+            var endWatch = new CacheWatch(start: false);
+            var endFirst = Asked(endWatch);
+            var endRequest = File.Exists(endFile) ? File.ReadAllText(endFile) : "";
+            var endAgain = Asked(endWatch, handled: endRequest);
+            var nextTurn = Asked(endWatch, handled: endRequest, lastAgo: 3.1);
+            var ownBuild = Fresh(w => Asked(w, code: CacheWatch.TurnEndOwnCode));
+            var ownBuild9 = Fresh(w => Asked(w, code: CacheWatch.TurnEndAskedAgainCode - 1));
+            var build10 = Fresh(w => Asked(w, code: CacheWatch.TurnEndAskedAgainCode));
+            // 300k since 2026-11-10 (the user's "35만", then "30만"); builds 8 and 9 compact by themselves only from 400k, so
+            // below it the overlay asks them too.
+            var at310 = Fresh(w => Asked(w, code: CacheWatch.TurnEndAskedAgainCode, context: 310_000));
+            var at290 = Fresh(w => Asked(w, code: CacheWatch.TurnEndAskedAgainCode, context: 290_000));
+            var own380 = Fresh(w => Asked(w, code: CacheWatch.TurnEndAskedAgainCode - 1, context: 380_000));
+            var own420 = Fresh(w => Asked(w, code: CacheWatch.TurnEndAskedAgainCode - 1, context: 420_000));
+            var noCompactBuild = Fresh(w => Asked(w, code: CacheWatch.CompactCodeNeeded - 1));
+            var small = Fresh(w => Asked(w, context: CacheWatch.TurnEndAt - 1));
+            var answering = Fresh(w => Asked(w, busy: true));
+            var done = Fresh(w => Asked(w, compacted: true));
+            var triedSince = Fresh(w => Asked(w, attempt: new { at = Ms(0.2), by = "auto", via = "api" }));
+            // 2026-11-10: 2 minutes of quiet after the answer first, and no background work still under way; within 30k of
+            // the engine's threshold, at once and whatever runs.
+            Log([prompt, answered, closing], quiet: 1);
+            var tooSoon = Fresh(w => Asked(w, lastAgo: 1.3));
+            var nearSoon = Fresh(w => Asked(w, lastAgo: 1.3, context: 440_000, threshold: 467_000));
+            var notNear = Fresh(w => Asked(w, lastAgo: 1.3, context: 436_000, threshold: 467_000));
+            var started = JsonSerializer.Serialize(new { type = "user", message = new { role = "user", content = new[] { new {
+                type = "tool_result", content = "Command running in background with ID: b9xdqrwee. Output is being written to: x" } } } });
+            // Written by hand: the engine keeps "<" as it is, where JsonSerializer would write it escaped.
+            var notified = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<task-notification>\\n<task-id>b9xdqrwee</task-id>\\n<status>completed</status>\\n</task-notification>\"}}";
+            Log([prompt, Said("assistant", "tool_use", "tool_use"), started, answered, closing]);
+            var heldWatch = new CacheWatch(start: false);
+            var held = Fresh(w => Asked(heldWatch));
+            var heldNear = Fresh(w => Asked(w, context: 440_000, threshold: 467_000));
+            Log([prompt, Said("assistant", "tool_use", "tool_use"), started, answered, closing, notified, answered, closing]);
+            var heldDone = Fresh(w => Asked(heldWatch));
+            Log([prompt, answered, closing]);
+            File.WriteAllText(endFile, "someone-else");
+            var pending = Asked(new CacheWatch(start: false), handled: "older");
+            var pendingKept = File.ReadAllText(endFile) == "someone-else";
+            Log([prompt]);
+            var underWay = Fresh(w => Asked(w));
+            Check(endFirst == 1 && endRequest.StartsWith(CacheWatch.TurnEndPrefix) && endRequest.Length == CacheWatch.TurnEndPrefix.Length + 32
+                && endAgain == 0 && nextTurn == 1
+                && ownBuild == 0 && ownBuild9 == 0 && build10 == 1 && CacheWatch.TurnEndAt == 300_000 && at310 == 1 && at290 == 0 && own380 == 1 && own420 == 0 && noCompactBuild == 0 && small == 0 && answering == 0 && done == 0 && triedSince == 0
+                && pending == 0 && pendingKept && underWay == 0,
+                "turn end: the overlay asks a large session on builds 4 to 7 and 10 on once per turn, when its log shows the turn ended and nothing else is under way");
+            Check(tooSoon == 0 && nearSoon == 1 && notNear == 0 && held == 0 && heldNear == 1 && heldDone == 1,
+                $"turn end: asked after 2 minutes of quiet and not while background work waits for its end, but at once near the engine's threshold (soon {tooSoon}/{nearSoon}/{notNear}, work {held}/{heldNear}/{heldDone})");
+            // The three ways background work starts in a real log, and its end notification, as they are written there.
+            string[] work =
+            [
+                "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"Command running in background with ID: boo03go6h. Output is being written to: C:\\\\x\"}]}}",
+                "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully. (This tool result is internal metadata \u2014 never quote it.)\\nagentId: a161be9ab67bb32b9 (internal ID)\"}]}]}}",
+                "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"Monitor started (task byxo93vxe, expires in 20m unless the source ends first)\"}]}}",
+            ];
+            string Done(string id, string status) =>
+                "{\"type\":\"user\",\"message\":{\"content\":\"<task-notification>\\n<task-id>" + id + "</task-id>\\n<output-file>x</output-file>\\n<status>" + status + "</status>\\n</task-notification>\"}}";
+            var side = "{\"isSidechain\":true,\"type\":\"user\",\"message\":{\"content\":\"Command running in background with ID: bside0001.\"}}";
+            Check(CacheWatch.WorkUnderWay([work[0]]) && CacheWatch.WorkUnderWay([work[1]]) && CacheWatch.WorkUnderWay([work[2]])
+                && !CacheWatch.WorkUnderWay([.. work, Done("boo03go6h", "completed"), Done("a161be9ab67bb32b9", "failed"), Done("byxo93vxe", "killed")])
+                && CacheWatch.WorkUnderWay([.. work, Done("boo03go6h", "completed"), Done("a161be9ab67bb32b9", "stopped")])
+                && CacheWatch.WorkUnderWay([work[0], Done("byxo93vxe", "completed")]) && !CacheWatch.WorkUnderWay([side]) && !CacheWatch.WorkUnderWay([prompt, answered]),
+                "turn end: background work is under way from its start (a command, an agent, a Monitor) until its end notification");
+
+            // 2026-11-10, the user: an answer that ends a line with "지금 /compact 하기 좋음" is compacted at once (150k and
+            // up), unless background work is under way. As the engine writes it: Korean as it is, quotes in text escaped.
+            string Answer(string text) =>
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"" + text + "\"}]}}";
+            var pauseAnswer = Answer("돌고 있는 백그라운드 작업은 없음. 지금 /compact 하기 좋음.");
+            var pauseMidAnswer = Answer("지금 /compact 하기 좋음.\\n\\n남은 일은 없음.");
+            var quotedAnswer = Answer("\\\"지금 /compact 하기 좋음\\\"이 뜬 경우를 말함.");
+            var stopFeedback = "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":\"Stop hook feedback: x\"}}";
+            int Pause(string[] lines, int code = 10, long context = 200_000)
+            {
+                Log(lines, quiet: 0);
+                return Fresh(w => Asked(w, code: code, context: context, threshold: 467_000));
+            }
+            var paused = Pause([prompt, pauseAnswer, closing]);
+            var pausedMid = Pause([prompt, pauseMidAnswer, closing]);
+            var quoted = Pause([prompt, quotedAnswer, closing]);
+            var pausedSmall = Pause([prompt, pauseAnswer, closing], context: CacheWatch.LargeContext - 1);
+            var pausedWork = Pause([prompt, Said("assistant", "tool_use", "tool_use"), started, pauseAnswer, closing]);
+            var pausedOwn = Pause([prompt, pauseAnswer, closing], code: 9);
+            var pausedOwnLarge = Pause([prompt, pauseAnswer, closing], code: 9, context: 450_000);
+            var pausedLarge = Pause([prompt, pauseAnswer, closing], context: 450_000);
+            var pausedThenHook = Pause([prompt, pauseAnswer, closing, stopFeedback, answered, closing]);
+            var pausedLastTurn = Pause([prompt, pauseAnswer, closing, prompt, answered, closing]);
+            Log([prompt, answered, closing]);
+            Check(paused == 1 && pausedMid == 1 && quoted == 0 && pausedSmall == 0 && pausedWork == 0 && pausedOwn == 1 && pausedOwnLarge == 0
+                && pausedLarge == 1 && pausedThenHook == 1 && pausedLastTurn == 0,
+                $"turn end: an answer that says \"지금 /compact 하기 좋음\" is compacted at once from 150k, not while background work runs, not when only quoted or said a turn before ({paused}{pausedMid}{quoted}{pausedSmall}{pausedWork}{pausedOwn}{pausedOwnLarge}{pausedLarge}{pausedThenHook}{pausedLastTurn})");
         }
         finally { watchRoot.Delete(true); }
         var compacted = new ClaudeTurnReader();

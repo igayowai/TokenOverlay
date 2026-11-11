@@ -55,12 +55,19 @@ internal sealed record OverlayPresentation(
     public IReadOnlyList<string> HistoryFooterLines => HistoryFooter is { Length: > 0 } footer ? footer.Split('\n') : [];
     // A weekly line takes a second row for its bar, the reset line one for its time line.
     // Without turns (no chat known yet) there is no column header: the list holds only the footer.
-    public int HistoryPanelRows => (Sessions is { } sessions ? Math.Max(1, sessions.Count) : History.Count + (History.Count > 0 ? 1 : 0))
+    public int HistoryPanelRows => SessionsTopRow + SessionRows
         + HistoryFooterLines.Count + HistoryFooterLines.Count(line => WeeklySplit.ParseLine(line) is not null || WeeklySplit.ParseReset(line) is not null);
     public bool HasHistoryPanel => Sessions is not null || History.Count > 0 || HistoryFooterLines.Count > 0;
-    // Claude in front: the list shows the large Claude sessions whose cache is alive, each with a 핑 button, in place
-    // of the recent turns (an empty list says so in one line). Null keeps the turns.
+    // Claude in front: the list shows the large Claude sessions whose cache is alive, each with a 핑 button (an empty
+    // list says so in one line). Null leaves them out.
     public IReadOnlyList<SessionRow>? Sessions { get; init; }
+    // The recent turns come first, the sessions under them (user, 2026-11-11: "사용량이랑 캐시세션 위에다가 최근턴을 붙여줘").
+    // The turns take their column header and one row each; with turns above them the sessions get a title row of their
+    // own, since the panel's header then names the turns.
+    public int TurnRows => History.Count > 0 ? History.Count + 1 : 0;
+    public bool SessionTitle => Sessions is not null && History.Count > 0;
+    public int SessionsTopRow => TurnRows + (SessionTitle ? 1 : 0);
+    public int SessionRows => Sessions is { } sessions ? Math.Max(1, sessions.Count) : 0;
 }
 
 // One row of the Ctrl list's sessions: the name, time left and size, what the mod will do or did, the 유지 switch
@@ -110,7 +117,24 @@ internal static class OverlayPresentationBuilder
             null);
     }
 
-    public static string FormatTokenCount(long value) => value switch
+    // Tokens spent, rounded half away from zero (user, 2026-11-11: "K말고 억으로", then "0.1억 미만은 만 단위"):
+    // below 0.1억 in whole 만 ("207만"), then 억 with two decimals below 1억 ("0.72억") and one from there ("1.5억").
+    // Each step is chosen on the rounded value, so 999.5만 reads "0.10억" and 0.996억 reads "1.0억". Under 1만 the
+    // count itself shows ("4,800"), since "0만" would hide it.
+    public static string FormatTokenCount(long value)
+    {
+        if (value < 10_000) return value.ToString("N0", CultureInfo.InvariantCulture);
+        var man = Math.Round(value / 10_000d, MidpointRounding.AwayFromZero);
+        if (man < 1_000) return man.ToString("0", CultureInfo.InvariantCulture) + "만";
+        var eok = value / 100_000_000d;
+        var two = Math.Round(eok, 2, MidpointRounding.AwayFromZero);
+        return two < 1
+            ? two.ToString("0.00", CultureInfo.InvariantCulture) + "억"
+            : Math.Round(eok, 1, MidpointRounding.AwayFromZero).ToString("0.0", CultureInfo.InvariantCulture) + "억";
+    }
+
+    // A context's size stays in k and M ("109.0k", "1.20M"): in 억 every context would read 0.00억 or 0.01억.
+    public static string FormatContextCount(long value) => value switch
     {
         >= 1_000_000 => (value / 1_000_000d).ToString("0.00", CultureInfo.InvariantCulture) + "M",
         >= 1_000 => (value / 1_000d).ToString("0.0", CultureInfo.InvariantCulture) + "k",
@@ -188,7 +212,7 @@ internal static class OverlayPresentationBuilder
             DisplayField.CacheHit => FormatTokenCount(snapshot.CachedInputTokens),
             DisplayField.CacheHitRate => $"{snapshot.CacheHitPercent:0}%",
             DisplayField.CacheMiss => FormatTokenCount(snapshot.UncachedInputTokens),
-            DisplayField.Context => $"{FormatTokenCount(snapshot.ContextUsedTokens)} / {FormatTokenCount(snapshot.ContextWindowTokens)}",
+            DisplayField.Context => $"{FormatContextCount(snapshot.ContextUsedTokens)} / {FormatContextCount(snapshot.ContextWindowTokens)}",
             DisplayField.ContextPercent => $"{contextPercent:0}%",
             DisplayField.Reasoning => FormatTokenCount(snapshot.ReasoningOutputTokens),
             DisplayField.Thread => ShortThreadId(snapshot.ThreadId),

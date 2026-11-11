@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace TokenOverlay;
 
@@ -8,7 +9,7 @@ namespace TokenOverlay;
 // The partner mod (tokenoverlay-cache, inside each Claude Code session) meets the overlay in BridgeFolder: it writes
 // <session>.json (alive, its last request, the last ping, a compaction) and reads <session>.ping, a request id the
 // overlay writes when the person presses 핑. A ping leaves nothing in the session log, so its time comes from there.
-internal sealed class CacheWatch : IDisposable
+internal sealed partial class CacheWatch : IDisposable
 {
     internal const int WarnMinutes = 10;
     // Below this a lapse costs little more than a compacted session's fresh start, so it is not worth a notice.
@@ -24,11 +25,13 @@ internal sealed class CacheWatch : IDisposable
     // What the mod last wrote for a session. Times in the mod's milliseconds since the epoch.
     // Code: the mod's build (3 and up keep a session when asked, see KeepUntil). PingAuto: the last ping was one of those.
     // Busy: the session was answering. Compact*: the last 압축 asked from the overlay, as the mod took it up (build 4 on).
-    // Attempt: the last compaction the mod tried (build 5 on), whatever asked it.
+    // Attempt: the last compaction the mod tried (build 5 on), whatever asked it. Context, Compacted: the context of
+    // the session's last request and whether a compaction came after it, as the mod saw them.
     internal sealed record Bridge(DateTimeOffset AliveAt, DateTimeOffset? LastAt, string Handled,
         DateTimeOffset? PingAt, bool PingOk, string? PingReason, long PingRead, long PingWrite, DateTimeOffset? CompactedAt,
         long Window = 0, int Code = 0, bool PingAuto = false, bool Busy = false,
-        string CompactHandled = "", DateTimeOffset? CompactAt = null, bool CompactOk = false, Attempt? Attempt = null)
+        string CompactHandled = "", DateTimeOffset? CompactAt = null, bool CompactOk = false, Attempt? Attempt = null,
+        long Context = 0, bool Compacted = false, long Threshold = 0)
     {
         // Still written by a running session, so what it says about that session's process holds.
         public bool Fresh(DateTimeOffset now) => now - AliveAt < PartnerFresh;
@@ -71,7 +74,225 @@ internal sealed class CacheWatch : IDisposable
 
     public CacheWatch(bool start = true)
     {
-        if (start) _timer = new System.Threading.Timer(_ => Scan(), null, TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(1));
+        if (!start) return;
+        _timer = new System.Threading.Timer(_ => Scan(), null, TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(1));
+        _turnEndTimer = new System.Threading.Timer(_ => TurnEndScan(), null, TurnEndEvery, TurnEndEvery);
+    }
+
+    // Turn-end compaction (2026-11-09, the user's "압축이 제일 중요"): a session whose main turn has ended answered with
+    // a context of 300k (TurnEndAt) or more is compacted then, before a next message can carry it past the engine's own threshold
+    // mid-turn (68% of those happened mid-turn, KB X-3127). The overlay decides it and asks through <session>.compact,
+    // which every mod from build 4 takes up within 30 seconds, so a session that kept an older mod build gets it
+    // without /reload-plugins, and the rule changes with the overlay alone. Builds 8 and 9 compact 1 second after the
+    // answer by themselves; build 10 leaves it to the overlay again.
+    // The user's two complaints of 2026-11-10 ("보낸 말이 기다림", "일이 남았는데 압축됨"): a message sent during the
+    // minute a compaction takes waited behind it, and a session that had just said it would carry on when its background
+    // work ended was compacted. So the overlay waits for 2 minutes of quiet after the answer (76% of 2,201 replies since
+    // 11-03 came sooner, so the person is most likely away by then), and not while the main loop has background work
+    // with no end notification yet; unless the context is within 30k of the engine's own threshold, where the next turn
+    // would be compacted mid-turn anyway, and the old rule holds.
+    // The size was 400k (X-3127's replay) until the user lowered it to 350k on 2026-11-10 ("40만 기준은 35만으로"), and
+    // to 300k the same morning ("30만으로 바꾸자").
+    // Builds 8 and 9 keep their own 400k: below it the overlay asks them like any other build.
+    internal const long TurnEndAt = 300_000;
+    internal const long OwnTurnEndAt = 400_000;
+    internal const int TurnEndOwnCode = 8;
+    internal const int TurnEndAskedAgainCode = 10;
+    internal const string TurnEndPrefix = "turnend-";
+    internal static readonly TimeSpan TurnEndWait = TimeSpan.FromMinutes(2);
+    internal const long TurnEndNearThreshold = 30_000;
+    private static readonly TimeSpan TurnEndEvery = TimeSpan.FromSeconds(5);
+    // Without the stop hooks' closing line (a PC with none), a turn counts as ended once its log is this quiet.
+    private static readonly TimeSpan TurnEndQuiet = TimeSpan.FromSeconds(10);
+    private const int TurnEndTail = 1 << 20;
+    private readonly System.Threading.Timer? _turnEndTimer;
+    private int _turnEndBusy;
+    // The last request each session was asked about, so one turn's end is asked once.
+    private readonly Dictionary<string, DateTimeOffset> _turnEndAsked = new(StringComparer.OrdinalIgnoreCase);
+    // The turn each session was last held back for background work, so the log says so once a turn.
+    private readonly Dictionary<string, DateTimeOffset> _turnEndHeld = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _logs = new(StringComparer.OrdinalIgnoreCase);
+
+    private void TurnEndScan()
+    {
+        if (Interlocked.Exchange(ref _turnEndBusy, 1) == 1) return;
+        try { TurnEnds(DateTimeOffset.Now, ClaudeSessionIndex.ProjectsRoot()); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        finally { Volatile.Write(ref _turnEndBusy, 0); }
+    }
+
+    // Asks each running session due a turn-end compaction; returns how many were asked.
+    internal int TurnEnds(DateTimeOffset now, string root, string? bridgeFolder = null)
+    {
+        bridgeFolder ??= BridgeFolder;
+        var folder = new DirectoryInfo(bridgeFolder);
+        if (!folder.Exists) return 0;
+        var asked = 0;
+        foreach (var report in folder.EnumerateFiles("*.json"))
+        {
+            if (now.UtcDateTime - report.LastWriteTimeUtc >= PartnerFresh) continue;
+            var id = Path.GetFileNameWithoutExtension(report.Name);
+            if (!Guid.TryParse(id, out _) || ReadBridge(report.FullName) is not { } bridge || !TurnEndDue(id, bridge, now, bridgeFolder)) continue;
+            // Large (350k): the turn-end rule. Pausable (150k): the answer said the work pauses. Either on a build that
+            // takes 압축 and will not compact this turn by itself (builds 8 and 9 do at 400k).
+            var leftToUs = !CompactsItself(bridge.Code) || bridge.Context < OwnTurnEndAt;
+            var large = bridge.Context >= TurnEndAt && leftToUs;
+            var pausable = bridge.Context >= LargeContext && leftToUs;
+            if ((!large && !pausable) || LogOf(root, id) is not { } log) continue;
+            var near = large && NearThreshold(bridge);
+            var state = TurnEndState(log, now, near ? TimeSpan.Zero : large ? TurnEndWait : TimeSpan.MaxValue, holdForWork: !near,
+                pauseAtOnce: pausable, out var paused);
+            if (state == TurnEnd.HeldForWork && (!_turnEndHeld.TryGetValue(id, out var held) || held != bridge.LastAt))
+            {
+                _turnEndHeld[id] = bridge.LastAt!.Value;
+                DiagnosticLog.Info("cache", $"turn-end compaction held: background work under way (build {bridge.Code}, {bridge.Context / 1000}K)");
+            }
+            if (state != TurnEnd.Due) continue;
+            try { Request(id, ".compact", bridgeFolder, TurnEndPrefix); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
+            _turnEndAsked[id] = bridge.LastAt!.Value;
+            asked++;
+            DiagnosticLog.Info("cache", $"compact asked at turn end (build {bridge.Code}, {bridge.Context / 1000}K, {(near ? "near the threshold, at once" : paused ? "the answer said to compact, at once" : "after 2 min quiet")})");
+        }
+        return asked;
+    }
+
+    // Builds 8 and 9 compact 1 second after an answer of 400k (OwnTurnEndAt) or more by themselves.
+    internal static bool CompactsItself(int code) => code is >= TurnEndOwnCode and < TurnEndAskedAgainCode;
+
+    // What the mod's report says: an uncompacted session on a build that takes 압축, not answering, with no compaction
+    // tried since its last request, none asked and not yet taken up, and not asked already for this request.
+    internal bool TurnEndDue(string id, Bridge bridge, DateTimeOffset now, string bridgeFolder)
+    {
+        if (bridge is not { Busy: false, Compacted: false, LastAt: { } last } || bridge.Code < CompactCodeNeeded || !bridge.Fresh(now)) return false;
+        if (bridge.Attempt is { } tried && tried.At >= last) return false;
+        if (_turnEndAsked.TryGetValue(id, out var asked) && asked == last) return false;
+        var waiting = Path.Combine(bridgeFolder, id + ".compact");
+        try { return !File.Exists(waiting) || File.ReadAllText(waiting).Trim() == bridge.CompactHandled; }
+        catch (IOException) { return false; }
+    }
+
+    private string? LogOf(string root, string id)
+    {
+        if (_logs.TryGetValue(id, out var known) && File.Exists(known)) return known;
+        if (!Directory.Exists(root)) return null;
+        foreach (var directory in Directory.EnumerateDirectories(root))
+        {
+            var path = Path.Combine(directory, id + ".jsonl");
+            if (File.Exists(path)) return _logs[id] = path;
+        }
+        return null;
+    }
+
+    // Whether the session's main turn has ended answered, from the end of its log: going back from the last line, the
+    // main loop's last word is an answer that ended the turn (stop_reason end_turn), followed by the stop hooks' closing
+    // line or a quiet log; or a slash command that ran on its own (local_command). A prompt, a tool's result or any
+    // other stop of the model's means a turn is under way, or ended otherwise, and nothing is asked.
+    internal static bool TurnEnded(string log, DateTimeOffset now) => TurnEndState(log, now, TimeSpan.Zero, holdForWork: false, false, out _) == TurnEnd.Due;
+
+    internal static bool NearThreshold(Bridge bridge) =>
+        bridge.Threshold > 0 && bridge.Context >= bridge.Threshold - TurnEndNearThreshold;
+
+    internal enum TurnEnd { UnderWay, Waiting, HeldForWork, Due }
+
+    // The same, then the log quiet for `wait` (nothing written since: no new prompt, no notification), and with
+    // `holdForWork` no background work the main loop started still waiting for its end notification. With
+    // `pauseAtOnce`, a turn whose answer said the work pauses ("지금 /compact 하기 좋음", see Paused) waits for nothing:
+    // the user's ask of 2026-11-10 ("이런 경우는 즉시 압축").
+    internal static TurnEnd TurnEndState(string log, DateTimeOffset now, TimeSpan wait, bool holdForWork, bool pauseAtOnce, out bool paused)
+    {
+        paused = false;
+        try
+        {
+            string[] lines;
+            long start;
+            using (var stream = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                start = Math.Max(0, stream.Length - TurnEndTail);
+                stream.Seek(start, SeekOrigin.Begin);
+                using var reader = new StreamReader(stream);
+                lines = reader.ReadToEnd().Split('\n');
+            }
+            if (!Ended(lines, start, log, now)) return TurnEnd.UnderWay;
+            if (pauseAtOnce && Paused(lines)) { paused = true; wait = TimeSpan.Zero; }
+            if (wait == TimeSpan.MaxValue || now.UtcDateTime - File.GetLastWriteTimeUtc(log) < wait) return TurnEnd.Waiting;
+            return holdForWork && WorkUnderWay(lines) ? TurnEnd.HeldForWork : TurnEnd.Due;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return TurnEnd.UnderWay; }
+    }
+
+    // Whether this turn's answer (the main loop's words since the person's last message; a stop hook's feedback is not
+    // the person's) ends a line with "지금 /compact 하기 좋음", the global rule's line for a point where work pauses.
+    // Only where a line ends: in the log's JSON the phrase is followed by "\n" or the string's closing quote, while the
+    // phrase quoted in a sentence is followed by an escaped quote.
+    internal static bool Paused(string[] lines)
+    {
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            var line = lines[i];
+            if (line.Length == 0 || line.Contains("\"isSidechain\":true", StringComparison.Ordinal)) continue;
+            if (line.Contains("\"type\":\"user\"", StringComparison.Ordinal) && !line.Contains("\"isMeta\":true", StringComparison.Ordinal)
+                && !line.Contains("\"tool_result\"", StringComparison.Ordinal)) return false;
+            if (line.Contains("\"type\":\"assistant\"", StringComparison.Ordinal) && PauseLine().IsMatch(line)) return true;
+        }
+        return false;
+    }
+
+    [GeneratedRegex(@"지금 /compact 하기 좋음\.?(?:\\n|"")")]
+    private static partial Regex PauseLine();
+
+    // Background work the main loop started (a command run in the background, an agent sent off, a Monitor) whose end
+    // notification (<task-notification> with completed, failed, stopped or killed) is not in the log yet. Work started
+    // before the part of the log read is not seen.
+    internal static bool WorkUnderWay(IEnumerable<string> lines)
+    {
+        var open = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var line in lines)
+        {
+            if (line.Contains("\"isSidechain\":true", StringComparison.Ordinal)) continue;
+            foreach (Match m in WorkStarted().Matches(line)) open.Add(m.Groups["id"].Value);
+            if (open.Count > 0) foreach (Match m in WorkEnded().Matches(line)) open.Remove(m.Groups["id"].Value);
+        }
+        return open.Count > 0;
+    }
+
+    // As written in the log's JSON: "\n" between the agent's two lines is two characters there.
+    [GeneratedRegex(@"(?:running in background with ID: |Async agent launched successfully\.[^""]*?agentId: |Monitor started \(task )(?<id>[A-Za-z0-9_-]+)")]
+    private static partial Regex WorkStarted();
+    [GeneratedRegex(@"<task-id>(?<id>[A-Za-z0-9_-]+)</task-id>(?:(?!<task-id>).)*?<status>(?:completed|failed|stopped|killed)</status>")]
+    private static partial Regex WorkEnded();
+
+    // Going back from the last line read: see TurnEnded.
+    private static bool Ended(string[] lines, long start, string log, DateTimeOffset now)
+    {
+        var closed = false;
+        for (var i = lines.Length - 1; i >= (start > 0 ? 1 : 0); i--)
+        {
+            var line = lines[i].Trim();
+            if (line.Length == 0 || line.Length > 200_000) continue;
+            using var doc = JsonDocument.Parse(line);
+            var r = doc.RootElement;
+            if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("type", out var t) || t.ValueKind != JsonValueKind.String) continue;
+            if (r.TryGetProperty("isSidechain", out var side) && side.ValueKind == JsonValueKind.True) continue;
+            var type = t.GetString();
+            if (type == "system")
+            {
+                var subtype = r.TryGetProperty("subtype", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+                if (subtype == "local_command") return true;
+                if (subtype == "stop_hook_summary") closed = true;
+                continue;
+            }
+            if (type == "user")
+            {
+                if (r.TryGetProperty("isMeta", out var meta) && meta.ValueKind == JsonValueKind.True) continue;
+                return false;
+            }
+            if (type != "assistant") continue;
+            var stop = r.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.Object
+                && m.TryGetProperty("stop_reason", out var sr) && sr.ValueKind == JsonValueKind.String ? sr.GetString() : null;
+            return stop == "end_turn" && (closed || now.UtcDateTime - File.GetLastWriteTimeUtc(log) >= TurnEndQuiet);
+        }
+        return false;
     }
 
     // As of the last scan, soonest lapse first.
@@ -206,7 +427,9 @@ internal sealed class CacheWatch : IDisposable
                 r.TryGetProperty("attempt", out var a) && a.ValueKind == JsonValueKind.Object && At(a, "at") is { } tried
                     ? new Attempt(tried, Text(a, "by") ?? "", At(a, "done"), Text(a, "via"),
                         a.TryGetProperty("ok", out var aok) && aok.ValueKind == JsonValueKind.True, Text(a, "reason"))
-                    : null);
+                    : null,
+                Count(r, "context"), r.TryGetProperty("compacted", out var cd) && cd.ValueKind == JsonValueKind.True,
+                Count(r, "threshold"));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return null; }
     }
@@ -227,7 +450,12 @@ internal sealed class CacheWatch : IDisposable
     // A retry (`retry-<id>` in <session>.compact) is taken the other way by build 5 and up.
     internal const int RetryCodeNeeded = 5;
     // The build of the mod this overlay carries (`code` in claude-mod's register.ts).
-    internal const int ModCode = 7;
+    internal const int ModCode = 11;
+    // The last build whose change is worth a /reload-plugins: an older session is told so. Build 9 only named its
+    // process for the CPU line, so the hint stayed at 8 then, not to ask every open session to reload for little (the
+    // user's complaint, 2026-11-09). Build 10 stops compacting 1 second after an answer, which the user asked for;
+    // build 11 only drops the size from its turn-end instructions, so the hint stays at 10.
+    internal const int ReloadHintCode = 10;
     internal static readonly TimeSpan KeepFor = TimeSpan.FromHours(8);
 
     internal static DateTimeOffset? KeepUntil(string sessionId, DateTimeOffset now, string? bridgeFolder = null)
@@ -293,7 +521,7 @@ internal sealed class CacheWatch : IDisposable
     internal static (string Title, string Text) Notice(IReadOnlyList<Warning> due)
     {
         var lines = due.OrderBy(w => w.MinutesLeft).Take(3)
-            .Select(w => $"{w.Name} · {Math.Ceiling(w.MinutesLeft):0}분 뒤 {OverlayPresentationBuilder.FormatTokenCount(w.Context)} 다시 저장");
+            .Select(w => $"{w.Name} · {Math.Ceiling(w.MinutesLeft):0}분 뒤 {OverlayPresentationBuilder.FormatContextCount(w.Context)} 다시 저장");
         var more = due.Count > 3 ? $"\n그 밖에 {due.Count - 3}개" : "";
         var help = due.Any(w => w.Partner)
             ? "\n눌러서 핑할 세션 고르기 · 그냥 두면 만료 5분 전 자동 압축"
@@ -301,5 +529,9 @@ internal sealed class CacheWatch : IDisposable
         return ("Claude 캐시 곧 만료 · 압축 안 한 세션", string.Join("\n", lines) + more + help);
     }
 
-    public void Dispose() => _timer?.Dispose();
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        _turnEndTimer?.Dispose();
+    }
 }

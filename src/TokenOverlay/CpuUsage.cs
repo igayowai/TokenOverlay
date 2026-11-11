@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace TokenOverlay;
 
-// The meters' readings: the whole PC's processor use, memory in use and the page file in use. Processor use is read once
+// The meters' readings: the whole PC's processor use and memory in use (the third bar, the graphics card, is GpuSensor). Processor use is read once
 // a second the way Task Manager reads it ("% Processor Utility", which counts
 // clock boost and can pass 100, shown capped at 100). Where that counter is missing, Windows' running totals of idle,
 // kernel and user time stand in ("% Processor Time"; kernel time includes idle time).
@@ -72,8 +72,7 @@ internal sealed class CpuUsage : IDisposable
     public void Dispose()
     {
         if (_query != IntPtr.Zero) PdhCloseQuery(_query);
-        if (_pageQuery != IntPtr.Zero) PdhCloseQuery(_pageQuery);
-        _query = _pageQuery = IntPtr.Zero;
+        _query = IntPtr.Zero;
     }
 
     // Memory in use, as Task Manager counts it: physical memory less what is available (0 to 1).
@@ -92,28 +91,5 @@ internal sealed class CpuUsage : IDisposable
         var status = new MemoryStatus { Length = (uint)Marshal.SizeOf<MemoryStatus>() };
         if (!GlobalMemoryStatusEx(ref status) || status.TotalPhys == 0) return null;
         return Math.Clamp(1 - (double)status.AvailPhys / status.TotalPhys, 0, 1);
-    }
-
-    // The page file in use, of its present size ("% Usage" of all page files; Windows grows a page file up to its
-    // maximum, so the share is of what it has grown to). Null where Windows has no page file or no reading.
-    private IntPtr _pageQuery;
-    private IntPtr _pageCounter;
-    private bool _pageTried;
-
-    public double? PageFile()
-    {
-        if (!_pageTried)
-        {
-            _pageTried = true;
-            if (PdhOpenQuery(null, IntPtr.Zero, out _pageQuery) == 0
-                && PdhAddEnglishCounter(_pageQuery, @"\Paging File(_Total)\% Usage", IntPtr.Zero, out _pageCounter) != 0)
-            {
-                PdhCloseQuery(_pageQuery);
-                _pageQuery = IntPtr.Zero;
-            }
-        }
-        if (_pageQuery == IntPtr.Zero) return null;
-        return PdhCollectQueryData(_pageQuery) == 0 && PdhGetFormattedCounterValue(_pageCounter, PdhFmtDouble, IntPtr.Zero, out var value) == 0
-            && value.Status is 0 or 1 ? Math.Clamp(value.Double / 100, 0, 1) : null;
     }
 }

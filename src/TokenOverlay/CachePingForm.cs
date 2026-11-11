@@ -209,7 +209,7 @@ internal sealed class CachePings
         // A session keeps the mod build it loaded until /reload-plugins is typed there (a mod cannot run it itself), so an
         // older one says so whenever there is no ping to tell of, and always while 유지 waits on it.
         var recent = _asked.ContainsKey(s.Id) || b.PingAt is { } at && now - at < TimeSpan.FromMinutes(60);
-        if (b.Code < CacheWatch.ModCode && (!recent || keep is not null && b.Code < CacheWatch.KeepCodeNeeded))
+        if (b.Code < CacheWatch.ReloadHintCode && (!recent || keep is not null && b.Code < CacheWatch.KeepCodeNeeded))
             text = text with { State = UpdateText };
         var canCompact = b.Code >= CacheWatch.CompactCodeNeeded;
         if (Compacting(s.Id, b, now) is { } compacting) { text = text with { State = compacting.State }; canCompact = compacting.CanAsk; }

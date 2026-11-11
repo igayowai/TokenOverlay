@@ -100,8 +100,8 @@ internal sealed partial class OverlayContext
         };
         settingsMenu.DropDownItems.Add(ringItem);
 
-        var cpuItem = new ToolStripMenuItem("CPU·램·페이지 파일 표시") { Checked = _settings.CpuMeterEnabled,
-            ToolTipText = "캡슐 왼쪽 위 빈자리에 CPU·램·페이지 파일 사용률 막대(파랑·보라·초록)를 넣어 오버레이를 꽉 찬 직사각형으로 표시 (끄면 지금 모양)" };
+        var cpuItem = new ToolStripMenuItem("CPU·램·GPU 표시") { Checked = _settings.CpuMeterEnabled,
+            ToolTipText = "캡슐 왼쪽 위 빈자리에 CPU·램 사용률과 그래픽카드(막대는 팬 속도, 아래 숫자는 온도 °) 막대(파랑·보라·초록)를 넣어 오버레이를 꽉 찬 직사각형으로 표시 (끄면 지금 모양)" };
         cpuItem.Click += (_, _) =>
         {
             _settings.CpuMeterEnabled = !_settings.CpuMeterEnabled;

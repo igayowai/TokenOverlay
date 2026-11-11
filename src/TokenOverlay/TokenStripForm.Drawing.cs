@@ -122,7 +122,8 @@ internal sealed partial class TokenStripForm
             {
                 DrawMeter(graphics, layout.CpuBarBounds, _cpuFill, CpuBlue, layout);
                 DrawMeter(graphics, layout.RamBarBounds, _ramFill, RamPurple, layout);
-                DrawMeter(graphics, layout.PageBarBounds, _pageFill, PageGreen, layout);
+                DrawMeter(graphics, layout.PageBarBounds, _gpu?.Fill, PageGreen, layout, GpuReading.Label(_gpu));
+                if (!layout.TopLineBounds.IsEmpty) DrawTopLine(graphics, layout, metrics);
             }
             // A line where the module meets the capsule: the ring (with its lines) is its own module, not part of the
             // capsule's rates under it.
@@ -206,6 +207,9 @@ internal sealed partial class TokenStripForm
                             AutoCapsule.Flags | TextFormatFlags.VerticalCenter);
                         right -= partWidth + 1 + metrics.CompactMetricGap;
                     }
+                    // A rate not known yet ("생성 —"): the dash in the numbers' column, the unit's place left empty, so
+                    // it lines up with the rates above it (the user's ask, 2026-11-10).
+                    if (unit.Length == 0 && value == "—") right -= AutoCapsule.Width("TPS", measuredLabel) + 1 + metrics.CompactMetricGap;
                     Part(unit, measuredLabel, _palette.Label);
                     Part(value, measuredValue, valueColor ?? _palette.Value);
                     if (labelAtLeft)
@@ -449,7 +453,7 @@ internal sealed partial class TokenStripForm
         {
             // No chat known yet: only the footer (the weekly line), under its own header.
             var sessions = _presentation.Sessions;
-            var title = sessions is not null ? "Claude 캐시 세션" : _presentation.History.Count > 0 ? "최근 턴" : "주간 사용량";
+            var title = _presentation.History.Count > 0 ? "최근 턴" : sessions is not null ? "Claude 캐시 세션" : "주간 사용량";
             TextRenderer.DrawText(graphics, HistoryPinned ? title + " · 고정됨" : title, headerFont,
                 new Rectangle(content.Left, content.Top, content.Width, headerHeight), _palette.Value, TextFlags);
             var history = _presentation.History;
@@ -461,37 +465,61 @@ internal sealed partial class TokenStripForm
             void Cell(string text, Font font, Color color, int left, int right, int y, bool alignRight) =>
                 TextRenderer.DrawText(graphics, text, font, new Rectangle(left, y, right - left, layout.ExpandedRowHeight), color,
                     alignRight ? TextFlags | TextFormatFlags.Right : TextFlags);
+            // A table (user, 2026-11-11: "표 형식으로 칸 나눠놔야 구분감이 사는듯"): a vertical line between each two
+            // columns, from the column header down to the last turn. Numbers keep a small gap from the line on their right;
+            // the column header is centred in its cell (user, 2026-11-11, picked over headers right and a centred mix).
+            int[] lines = [Edge(11), Edge(25), Edge(46), Edge(64), Edge(78), Edge(93)];
+            var gap = Math.Max(4, layout.ExpandedRowHeight / 6);
+            void Number(string text, Font font, Color color, int left, int right, int y, bool header) =>
+                TextRenderer.DrawText(graphics, text, font, header
+                        ? new Rectangle(left, y, right - left, layout.ExpandedRowHeight)
+                        : new Rectangle(left + gap, y, right - left - (2 * gap), layout.ExpandedRowHeight), color,
+                    TextFlags | (header ? TextFormatFlags.HorizontalCenter : TextFormatFlags.Right));
             void Row(int index, string when, string tokens, string seconds, string rate, string model, string cache, string name, Font font, bool header)
             {
                 var y = historyTop + (index * layout.ExpandedRowHeight);
                 if (!header) graphics.DrawLine(dividerPen, content.Left, y, content.Right, y);
-                Cell(when, labelFont, _palette.Label, Edge(0), Edge(11), y, false);
-                Cell(tokens, font, header ? _palette.Label : _palette.Value, Edge(11), Edge(25), y, true);
+                Cell(when, labelFont, _palette.Label, Edge(0), lines[0] - gap, y, false);
+                Number(tokens, font, header ? _palette.Label : _palette.Value, lines[0], lines[1], y, header);
                 var secondsColor = header ? _palette.Label : _palette.Value;
                 var split = header ? -1 : seconds.LastIndexOf(' ');
-                if (split < 0) Cell(seconds, font, secondsColor, Edge(25), Edge(46), y, true);
+                if (split < 0) Number(seconds, font, secondsColor, lines[1], lines[2], y, header);
                 else
                 {
                     // "11분 38초" over "3분 1초": the seconds get a two-digit slot so 분 and 초 each line up.
                     var slot = AutoCapsule.Width(" 00초", font);
-                    Cell(seconds[(split + 1)..], font, secondsColor, Edge(46) - slot, Edge(46), y, true);
-                    Cell(seconds[..split], font, secondsColor, Edge(25), Edge(46) - slot, y, true);
+                    Number(seconds[(split + 1)..], font, secondsColor, lines[2] - slot - (2 * gap), lines[2], y, false);
+                    Number(seconds[..split], font, secondsColor, lines[1], lines[2] - slot, y, false);
                 }
-                Cell(rate, font, header ? _palette.Label : _palette.Accent, Edge(46), Edge(64), y, true);
-                Cell(model, font, header ? _palette.Label : _palette.Value, Edge(64), Edge(78), y, true);
-                Cell(cache, font, header ? _palette.Label : _palette.Value, Edge(78), Edge(92), y, true);
-                // The name closes the row, left-aligned after a small gap.
-                Cell(name, labelFont, _palette.Label, Edge(95), content.Right, y, false);
+                Number(rate, font, header ? _palette.Label : _palette.Accent, lines[2], lines[3], y, header);
+                Number(model, font, header ? _palette.Label : _palette.Value, lines[3], lines[4], y, header);
+                Number(cache, font, header ? _palette.Label : _palette.Value, lines[4], lines[5], y, header);
+                // The name closes the row, left-aligned after the last line.
+                Cell(name, labelFont, _palette.Label, lines[5] + gap, content.Right, y, false);
             }
-            if (sessions is not null) DrawSessions(graphics, sessions, labelFont, valueFont, dividerPen, content, historyTop, layout.ExpandedRowHeight);
-            else if (history.Count > 0) Row(0, "", "소모", "시간", "전체", "모델", "캐시", "모델명", labelFont, true);
-            for (var index = 0; sessions is null && index < history.Count; index++)
+            if (history.Count > 0) Row(0, "", "소모", "시간", "전체", "모델", "캐시", "모델명", labelFont, true);
+            for (var index = 0; index < history.Count; index++)
             {
                 var item = history[index];
                 Row(index + 1, item.When, item.Tokens, item.Seconds, item.Rate, item.Model, item.Cache, item.ModelName, valueFont, false);
             }
+            if (history.Count > 0)
+                foreach (var x in lines)
+                    graphics.DrawLine(dividerPen, x, historyTop, x, historyTop + (_presentation.TurnRows * layout.ExpandedRowHeight));
+            if (_presentation.SessionTitle)
+            {
+                // Under the turns the sessions are their own section: a line across the panel and their title.
+                var y = historyTop + (_presentation.TurnRows * layout.ExpandedRowHeight);
+                using var section = new Pen(Color.FromArgb(110, _palette.Label), Math.Max(1f, metrics.StrokeWidth));
+                graphics.DrawLine(section, bounds.Left + 1, y, bounds.Right - 2, y);
+                TextRenderer.DrawText(graphics, "Claude 캐시 세션", headerFont,
+                    new Rectangle(content.Left, y, content.Width, layout.ExpandedRowHeight), _palette.Value, TextFlags);
+            }
+            if (sessions is not null)
+                DrawSessions(graphics, sessions, labelFont, valueFont, dividerPen, content,
+                    historyTop + (_presentation.SessionsTopRow * layout.ExpandedRowHeight), layout.ExpandedRowHeight);
             var footerLines = _presentation.HistoryFooterLines;
-            var row = sessions is not null ? Math.Max(1, sessions.Count) : history.Count > 0 ? history.Count + 1 : 0;
+            var row = _presentation.SessionsTopRow + _presentation.SessionRows;
             var usage = (Bar: Rectangle.Empty, Label: Rectangle.Empty);
             for (var index = 0; index < footerLines.Count; index++)
             {
@@ -798,21 +826,107 @@ internal sealed partial class TokenStripForm
     internal static readonly Color RamPurple = Color.FromArgb(178, 120, 218);
     internal static readonly Color PageGreen = Color.FromArgb(112, 190, 96);
 
-    private static void DrawMeter(Graphics graphics, IntRect bar, double? fill, Color color, OverlayLayoutResult layout)
+    // `foot`: the number at the bar's foot (the whole percent when not given; the graphics card's temperature for the
+    // third bar, 2026-11-10). `top`: a second number at its top, or none. A number wider than the bar is drawn in a smaller type to fit.
+    private static void DrawMeter(Graphics graphics, IntRect bar, double? fill, Color color, OverlayLayoutResult layout,
+        string? foot = null, string? top = null)
     {
         if (bar.IsEmpty) return;
         var box = bar.ToRectangle();
         DrawMeterBar(graphics, box, fill, color);
-        var text = CpuPercent(fill) is int percent ? $"{percent}" : "—";
+        var text = foot ?? (CpuPercent(fill) is int percent ? $"{percent}" : "—");
         // The number at the bar's foot, centred across it, inside the edges.
         var edge = Math.Max(1, (int)Math.Round(box.Height / 16.0));
         var inside = Rectangle.FromLTRB(box.Left + edge, box.Top + edge, box.Right - edge, box.Bottom - edge - Math.Max(1, edge / 2));
-        var flags = AutoCapsule.Flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.Bottom;
         // Chosen over six other ways (outlines, bolder, theme-coloured, a dark plate) on 2026-11-07.
         using var font = AutoCapsule.MeterFont(layout.Dpi, layout.ScalePercent);
         var shadow = Math.Max(1, box.Height / 40);
-        TextRenderer.DrawText(graphics, text, font, inside with { X = inside.X + shadow, Y = inside.Y + shadow }, Color.FromArgb(20, 20, 20), flags);
-        TextRenderer.DrawText(graphics, text, font, inside, Color.White, flags);
+        void Draw(string value, TextFormatFlags place)
+        {
+            var flags = AutoCapsule.Flags | TextFormatFlags.HorizontalCenter | place;
+            var width = TextRenderer.MeasureText(graphics, value, font, Size.Empty, AutoCapsule.Flags).Width;
+            using var fitted = width > inside.Width && inside.Width > 0
+                ? new Font(font.FontFamily, font.Size * inside.Width / width, font.Style, font.Unit) : null;
+            var type = fitted ?? font;
+            TextRenderer.DrawText(graphics, value, type, inside with { X = inside.X + shadow, Y = inside.Y + shadow }, Color.FromArgb(20, 20, 20), flags);
+            TextRenderer.DrawText(graphics, value, type, inside, Color.White, flags);
+        }
+        Draw(text, TextFormatFlags.Bottom);
+        if (!string.IsNullOrEmpty(top)) Draw(top, TextFormatFlags.Top);
+    }
+
+    // The CPU line: small text in the label colour from the meters' left edge, cut with "…" when too long, over a
+    // divider like the one between the meters' row and the capsule.
+    private void DrawTopLine(Graphics graphics, OverlayLayoutResult layout, OverlayRenderMetrics metrics)
+    {
+        var area = layout.TopLineBounds.ToRectangle();
+        // A margin and a half above the text, as much under it before the divider (see AutoCapsule.TopLineHeight).
+        var margin = Math.Max(2, AutoCapsule.RingSize(layout.Dpi, layout.ScalePercent).Margin);
+        var left = layout.CpuBarBounds.IsEmpty ? area.Left + metrics.CapsuleRadius : layout.CpuBarBounds.Left;
+        var text = Rectangle.FromLTRB(left, area.Top + margin * 3 / 2, area.Right - metrics.CapsuleRadius, area.Bottom - margin * 3 / 2);
+        using var font = AutoCapsule.TopLineFont(layout.Dpi, layout.ScalePercent);
+        var line = _topLine ?? "CPU 재는 중…";
+        // A program shown by its logo (Python, the user's ask on 2026-11-10): its file's icon, as tall as the text, in
+        // place of its name. Without the icon the name stays.
+        var space = line.IndexOf(' ');
+        if (_topLogo is { } logo && space > 0 && CpuTop.HasLogo(line[..space]) && TopLogo(logo, font.Height) is { } image)
+        {
+            graphics.DrawImageUnscaled(image, text.Left, text.Top + (text.Height - image.Height) / 2);
+            text = Rectangle.FromLTRB(text.Left + image.Width + Math.Max(2, margin), text.Top, text.Right, text.Bottom);
+            line = line[(space + 1)..];
+        }
+        TextRenderer.DrawText(graphics, line, font, text, _palette.Label,
+            AutoCapsule.Flags | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        using var divider = new Pen(Color.FromArgb(110, _palette.Label), Math.Max(1f, metrics.StrokeWidth));
+        graphics.DrawLine(divider, area.Left + metrics.CapsuleRadius, area.Bottom, area.Right - metrics.CapsuleRadius, area.Bottom);
+    }
+
+    // The logo from the program file's own icon at this size, read once per file and size; null when the file gives none.
+    private Bitmap? TopLogo(string path, int size)
+    {
+        if (_topLogoImage is { } kept && kept.Path == path && kept.Size == size) return kept.Image;
+        _topLogoImage?.Image?.Dispose();
+        Bitmap? image = null;
+        try
+        {
+            using var icon = Icon.ExtractIcon(path, 0, 256);
+            if (icon is not null) { using var large = icon.ToBitmap(); image = LogoOnly(large, size); }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { }
+        _topLogoImage = (path, size, image);
+        return image;
+    }
+
+    // python.exe's icon puts the logo over a console window (pythonw.exe's over a plain one); the user wants the logo
+    // alone (2026-11-10). Its two snakes are the icon's only blue and yellow below the window's title bar: those pixels,
+    // cut to their bounds and scaled to the size. The whole icon when none are found.
+    internal static Bitmap LogoOnly(Bitmap icon, int size)
+    {
+        var logo = new Bitmap(icon.Width, icon.Height);
+        int left = int.MaxValue, top = int.MaxValue, right = -1, bottom = -1;
+        for (var y = icon.Height * 3 / 10; y < icon.Height; y++)
+            for (var x = 0; x < icon.Width; x++)
+            {
+                var c = icon.GetPixel(x, y);
+                var hue = c.GetHue();
+                if (c.A < 40 || c.GetSaturation() <= 0.35f || !(hue is >= 195 and <= 230 or >= 38 and <= 58)) continue;
+                logo.SetPixel(x, y, c);
+                (left, top, right, bottom) = (Math.Min(left, x), Math.Min(top, y), Math.Max(right, x), Math.Max(bottom, y));
+            }
+        var source = right < 0 ? icon : logo;
+        var bounds = right < 0 ? new Rectangle(0, 0, icon.Width, icon.Height) : Rectangle.FromLTRB(left, top, right + 1, bottom + 1);
+        var side = Math.Max(bounds.Width, bounds.Height);
+        var scaled = new Bitmap(size, size);
+        using (var g = Graphics.FromImage(scaled))
+        {
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            var w = size * bounds.Width / side;
+            var h = size * bounds.Height / side;
+            g.DrawImage(source, new Rectangle((size - w) / 2, (size - h) / 2, w, h), bounds, GraphicsUnit.Pixel);
+        }
+        logo.Dispose();
+        return scaled;
     }
 
     private static void DrawMeterBar(Graphics graphics, Rectangle bar, double? fill, Color color)

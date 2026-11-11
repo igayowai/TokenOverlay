@@ -619,15 +619,21 @@ internal sealed partial class OverlayContext : ApplicationContext
 
     // The meters' readings (CPU, memory, page file), about once a second (Task Manager's pace) while they are switched on.
     private readonly CpuUsage _cpu = new();
+    private readonly GpuSensor _gpu = new();
+    // The line over the meters: read on its own thread every 2 seconds while the meters are on.
+    private readonly CpuTop _cpuTop = new();
     private long _cpuAt;
 
     private void SampleCpu(bool now = false)
     {
+        _cpuTop.Enabled = _settings.CpuMeterEnabled;
         if (!_settings.CpuMeterEnabled) return;
         var at = Environment.TickCount64;
         if (!now && at - _cpuAt < 950) return;
         _cpuAt = at;
-        _form.SetMeters(_cpu.Sample(), CpuUsage.Memory(), _cpu.PageFile());
+        _form.SetMeters(_cpu.Sample(), CpuUsage.Memory(), _gpu.Read());
+        var logo = _cpuTop.Logo;
+        _form.SetTopLine(_cpuTop.Text, logo);
     }
 
     private void RefreshPresentation()
@@ -818,6 +824,8 @@ internal sealed partial class OverlayContext : ApplicationContext
             _codexWeekly.Dispose();
             _updateTimer.Dispose();
             _cpu.Dispose();
+            _gpu.Dispose();
+            _cpuTop.Dispose();
             DriveShare.DeviceAdded -= OnDeviceAdded;
             _cacheWatch.Dispose();
             _deviceManager?.Dispose();

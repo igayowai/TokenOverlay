@@ -166,6 +166,10 @@ internal static class AutoCapsuleChecks
         }
         // The CPU meter (a setting): Task Manager's tray icon at the left end of the ring's row, which then runs the
         // capsule's full width, so the overlay is one rounded rectangle (drawn for review).
+        // A graphics card reading (fan percent, temperature).
+        static GpuReading Gpu(int fan,int temp)=>new(fan,temp);
+        static string? PythonOnPath()=>(Environment.GetEnvironmentVariable("PATH")??"").Split(';',StringSplitOptions.RemoveEmptyEntries)
+            .Select(d=>Path.Combine(d.Trim(),"python.exe")).FirstOrDefault(p=>File.Exists(p) && !p.Contains("WindowsApps",StringComparison.OrdinalIgnoreCase));
         Bitmap Shot(TokenStripForm f)
         {
             var shot=new Bitmap(f.Width,f.Height);
@@ -185,9 +189,18 @@ internal static class AutoCapsuleChecks
             var bar=on.CpuBarBounds;
             var m=OverlayRenderMetrics.Create(dpi,on.ScalePercent);
             var gap=AutoCapsule.RingSize(dpi,on.ScalePercent).Margin;
+            // The CPU line over the meters' row (2026-11-09): the row and the capsule move down by it; at the host's top
+            // right the window keeps its top (the host is taken as lower by the line too) and grows down.
+            var line=on.TopLineBounds.Height;
+            IntRect Down(IntRect r)=>r with {Y=r.Y+line};
+            Check(off.TopLineBounds.IsEmpty && line>0 && on.TopLineBounds==new IntRect(on.CapsuleBounds.X,off.RingBounds.Y,on.CapsuleBounds.Width,line)
+                && on.TopLineBounds.Bottom==on.RingModuleBounds.Top && line<on.RingBounds.Height/2
+                && TokenStripForm.CapsuleWithRow(on).Top==on.TopLineBounds.Top,
+                $"CPU line: a thin line over the meters' row, under half the ring's height, inside the one rectangle ({dpi} DPI; {on.TopLineBounds})");
             Check(!off.FullTopRow && off.CpuBarBounds.IsEmpty && on.FullTopRow
                 && on.RingModuleBounds==new IntRect(on.CapsuleBounds.X,on.RingBounds.Y,on.CapsuleBounds.Width,on.RingBounds.Height)
-                && on.RingBounds==off.RingBounds && on.RingNoteBounds==off.RingNoteBounds && on.CapsuleBounds==off.CapsuleBounds && on.WindowBounds==off.WindowBounds
+                && on.RingBounds==Down(off.RingBounds) && on.RingNoteBounds==Down(off.RingNoteBounds) && on.CapsuleBounds==Down(off.CapsuleBounds)
+                && on.WindowBounds==off.WindowBounds with {Height=off.WindowBounds.Height+line}
                 && bar.Width*8<=bar.Height*7+8 && bar.Width*2>=bar.Height && bar.Left>on.CapsuleBounds.Left && bar.Top>on.RingBounds.Top && bar.Bottom<on.RingBounds.Bottom
                 && on.RamBarBounds==bar with {X=bar.Right+gap} && on.PageBarBounds==bar with {X=on.RamBarBounds.Right+gap}
                 && on.PageBarBounds.Right<on.RingNoteBounds.Left,
@@ -200,12 +213,12 @@ internal static class AutoCapsuleChecks
             using(var probe=Graphics.FromHwnd(IntPtr.Zero))
                 Check(form.Region is {} shape && shape.IsVisible(on.CapsuleBounds.X+1,on.RingBounds.Top+m.CapsuleRadius+1,probe)
                     && shape.IsVisible(bar.Left,bar.Top,probe) && shape.IsVisible(on.CapsuleBounds.X+on.CapsuleBounds.Width/3,on.RingBounds.Top+1,probe)
-                    && !shape.IsVisible(on.CapsuleBounds.X,on.RingBounds.Top,probe) && !shape.IsVisible(on.CapsuleBounds.Right-1,on.CapsuleBounds.Bottom-1,probe)
+                    && !shape.IsVisible(on.CapsuleBounds.X,on.TopLineBounds.Top,probe) && !shape.IsVisible(on.CapsuleBounds.Right-1,on.CapsuleBounds.Bottom-1,probe)
                     && form.WindowShapeContains(on.CapsuleBounds.X+1,on.RingBounds.Top+m.CapsuleRadius+1),
                     $"CPU meter: the window is one rounded rectangle over the row and the capsule ({dpi} DPI)");
             if(dpi!=144) continue;
             foreach(var kind in new[]{OverlayThemeKind.Light,OverlayThemeKind.Dark})
-            foreach(var (cpu,ram,page) in new (double?,double?,double?)[]{(0.07,0.84,0.03),(0.43,0.62,0.28),(0.87,0.95,0.71),(null,null,null)})
+            foreach(var (cpu,ram,page) in new (double?,double?,GpuReading?)[]{(0.07,0.84,Gpu(30,35)),(0.43,0.62,Gpu(55,62)),(0.87,0.95,Gpu(100,87)),(null,null,null)})
             {
                 form.ApplyTheme(OverlayThemePalette.For(kind));
                 form.SetMeters(cpu,ram,page);
@@ -214,15 +227,51 @@ internal static class AutoCapsuleChecks
             }
             // Each whole percent shows: 42% and 43% differ inside the bar.
             form.ApplyTheme(OverlayThemePalette.For(OverlayThemeKind.Light));
-            form.SetMeters(0.42,0.5,0.5);
+            form.SetMeters(0.42,0.5,Gpu(30,35));
             using var at42=Shot(form);
-            form.SetMeters(0.43,0.5,0.5);
+            form.SetMeters(0.43,0.5,Gpu(30,35));
             using var at43=Shot(form);
             var differs=false;
             for(var py=bar.Top;py<bar.Bottom && !differs;py++)
                 // Near the bar's left edge, clear of the number in its middle.
                 if(at42.GetPixel(bar.Left+bar.Width/8+2,py)!=at43.GetPixel(bar.Left+bar.Width/8+2,py)) differs=true;
             Check(differs && form.CpuFill==0.43,"CPU meter: one percent more fills a little more of the bar");
+            // Draft pictures of the CPU line (2026-11-09), like the user's screen: ring 25%, Opus 5.5 500K.
+            var drafted=TurnPresentation.Create(Live(0.25)) with { RingNote="Opus 5.5\n500K", CpuMeter=true };
+            var draftLayout=OverlayLayoutCalculator.Calculate(request with {Presentation=drafted});
+            form.SetPresentation(drafted);
+            form.ApplyLayout(draftLayout);
+            foreach(var kind in new[]{OverlayThemeKind.Light,OverlayThemeKind.Dark})
+            // The program and its share first, so a long session name is what "…" cuts.
+            // No "CPU 1위" ahead of it: the user knows what the line is (2026-11-09).
+            // Python by its logo, from a python.exe on this PC's PATH (2026-11-10); "python-name" is the same line without it.
+            foreach(var (name,text,logo) in new[]{("claude","python 10% · 토큰 오버레이",(string?)null),("app","KakaoTalk 3%",null),
+                ("long","dotnet 37% · B2 그룹 묶기·기본 타깃 리버싱 · 새 F 계산 조건",null),("waiting",(string?)null,null),
+                ("python","python 45% · C 판정 — 실측 기준·판정 도구",PythonOnPath()),("python-name","python 45% · C 판정 — 실측 기준·판정 도구",null)})
+            {
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.SetMeters(1.0,0.72,Gpu(30,35));
+                form.SetTopLine(text,logo);
+                using var shot=Shot(form);
+                shot.Save(Path.Combine(directory,$"topline-{(kind==OverlayThemeKind.Light?"light":"dark")}-{name}.png"));
+            }
+            form.SetTopLine(null);
+            Check(CpuTop.HasLogo("python") && CpuTop.HasLogo("pythonw") && CpuTop.HasLogo("Python3.14") && !CpuTop.HasLogo("py")
+                && !CpuTop.HasLogo("pythonista") && !CpuTop.HasLogo("dotnet"),"CPU line: python, pythonw, python3.14 go by the logo; other programs by name");
+            var python=PythonOnPath();
+            if(python is null) Console.WriteLine("SKIP CPU line logo: no python.exe on PATH");
+            else
+            {
+                Bitmap Line(string? logo){ form.SetTopLine("python 45% · 세션",logo); return Shot(form); }
+                using var named=Line(null);
+                using var logoed=Line(python);
+                using var wrong=Line(Path.Combine(directory,"no-such-file.exe"));
+                var area=draftLayout.TopLineBounds.ToRectangle();
+                bool Same(Bitmap a,Bitmap b){ for(var y=area.Top;y<area.Bottom;y++) for(var x=area.Left;x<area.Right;x++) if(a.GetPixel(x,y)!=b.GetPixel(x,y)) return false; return true; }
+                Check(!Same(named,logoed),"CPU line: python's own icon replaces its name");
+                Check(Same(named,wrong),"CPU line: a file without an icon leaves the name");
+                form.SetTopLine(null);
+            }
         }
         // The meter alone (context ring off or not known yet): the row with the meter only, still one rectangle.
         {
@@ -237,15 +286,99 @@ internal static class AutoCapsuleChecks
             form.SetPresentation(alone);
             form.ApplyTheme(OverlayThemePalette.For(OverlayThemeKind.Dark));
             form.ApplyLayout(layout);
-            form.SetMeters(0.31,0.84,0.03);
+            form.SetMeters(0.31,0.84,Gpu(30,35));
             using var shot=Shot(form);
             shot.Save(Path.Combine(directory,"cpu-alone-dark.png"));
+        }
+        // The CPU line's reading: groups by program, a process under a session's claude.exe counted for the session.
+        {
+            const string sid="1a2b3c4d-0000-4000-8000-000000000001";
+            CpuTop.Proc P(int pid,int parent,string exe,long used,string? session=null,long created=10)=>new(pid,parent,exe,created,used,session);
+            CpuTop.Proc[] Tree(long python,long chrome,long node)=>[
+                P(100,4,"explorer.exe",1),
+                P(200,100,"chrome.exe",chrome/4),P(201,200,"chrome.exe",chrome-chrome/4),
+                P(300,100,"claude.exe",5),P(310,300,"claude.exe",0,sid),P(320,310,"cmd.exe",0),P(330,320,"python.exe",python),
+                P(340,300,"claude.exe",1,""),P(350,340,"node.exe",node)];
+            string? Title(string id)=>id==sid?"토큰 오버레이":null;
+            var reused=new[]{P(100,4,"explorer.exe",0),P(500,100,"game.exe",5,created:50),P(600,500,"helper.exe",70,created:20)};
+            // Seen 2026-11-09: python workers under `timeout`, whose shell had exited.
+            var orphaned=new[]{P(700,8456,"timeout.exe",0),P(701,700,"timeout.exe",0),P(702,701,"python.exe",2),P(703,702,"python.exe",30),P(704,702,"python.exe",31)};
+            Check(CpuTop.Line(Tree(50,40,20),1000,Title)=="python 5% · 토큰 오버레이"
+                && CpuTop.Line(Tree(20,40,10),1000,Title)=="chrome 4%"
+                && CpuTop.Line(Tree(20,40,60),1000,Title)=="node 6% · "+CpuTop.UnknownSession
+                && CpuTop.Line(Tree(50,40,20),1000,_=>null)=="python 5% · 1a2b3c4d"
+                && CpuTop.Line(reused,1000,Title)=="helper 7%" && CpuTop.Line(orphaned,1000,Title)=="python 6%"
+                && CpuTop.Line(Tree(0,0,0).Select(p=>p with {Used=-1}).ToArray(),1000,Title) is null && CpuTop.Line(Tree(50,40,20),0,Title) is null
+                && CpuTop.SessionOf($"\"C:\\x\\claude.exe\" --output-format stream-json --resume {sid} --verbose")==sid
+                && CpuTop.SessionOf("claude.exe --output-format stream-json --await-claim")==""
+                && CpuTop.SessionOf("claude.exe --type=renderer --user-data-dir=x") is null,
+                "CPU line: the heaviest program group, a session's own processes named by the session (or 이름 모름), a reused pid not taken for a parent");
+            var reports=Directory.CreateTempSubdirectory("cputop-");
+            try
+            {
+                File.WriteAllText(Path.Combine(reports.FullName,sid+".json"),$"{{\"v\":1,\"code\":9,\"sessionId\":\"{sid}\",\"pid\":340}}");
+                var stale=Path.Combine(reports.FullName,"aaaaaaaa-0000-0000-0000-000000000000.json");
+                File.WriteAllText(stale,"{\"v\":1,\"code\":9,\"sessionId\":\"aaaaaaaa-0000-0000-0000-000000000000\",\"pid\":350}");
+                File.SetLastWriteTimeUtc(stale,DateTime.UtcNow.AddMinutes(-5));
+                File.WriteAllText(Path.Combine(reports.FullName,"bbbbbbbb-0000-0000-0000-000000000000.json"),"{\"v\":1,\"code\":8,\"sessionId\":\"bbbbbbbb-0000-0000-0000-000000000000\"}");
+                var pids=CpuTop.ReadSessionPids(reports.FullName,DateTimeOffset.Now);
+                Check(pids.Count==1 && pids[340]==sid,"CPU line: a fresh session's process is named by its mod's report (build 9), a stale or older report is not");
+            }
+            finally { reports.Delete(true); }
+            // Orphaned work (2026-11-10): its head is found, and its environment's session id names it.
+            static byte[] Block(params string[] vars)=>System.Text.Encoding.Unicode.GetBytes(string.Concat(vars.Select(v=>v+"\0"))+"\0");
+            var heads=CpuTop.Orphans(orphaned);
+            var named=orphaned.Select(p=>p.Pid==700?p with {Session=sid}:p).ToArray();
+            Check(heads.Count==1 && heads[700]==704 && CpuTop.Orphans(Tree(50,40,20)).Count==0
+                && CpuTop.Line(named,1000,Title)=="python 6% · 토큰 오버레이"
+                && CpuTop.FindSession(Block("PATH=C:\\x","CLAUDE_CODE_SESSION_ID="+sid,"OTHER=1"))==sid
+                && CpuTop.FindSession(Block("CLAUDE_CODE_SESSION_ID="+sid))==sid
+                && CpuTop.FindSession(Block("XCLAUDE_CODE_SESSION_ID="+sid))==null
+                && CpuTop.FindSession(Block("CLAUDE_CODE_SESSION_ID=not-an-id-at-all-but-36-chars-long!!"))==null
+                && CpuTop.FindSession(Block("PATH=C:\\x"))==null,
+                "CPU line: work whose shell has exited is named by the session id in its environment, that variable alone");
+            System.Diagnostics.Process? Child(string? session)
+            {
+                var start=new System.Diagnostics.ProcessStartInfo("cmd.exe","/c ping -n 6 127.0.0.1 >nul"){UseShellExecute=false,CreateNoWindow=true};
+                start.Environment.Remove("CLAUDE_CODE_SESSION_ID");
+                if(session is not null) start.Environment["CLAUDE_CODE_SESSION_ID"]=session;
+                return System.Diagnostics.Process.Start(start);
+            }
+            using(var marked=Child(sid))
+            using(var plain=Child(null))
+            {
+                var fromMarked=CpuTop.SessionFromEnvironment(marked!.Id);
+                var fromPlain=CpuTop.SessionFromEnvironment(plain!.Id);
+                try { marked.Kill(); plain.Kill(); } catch(InvalidOperationException) { }
+                Check(fromMarked==sid && fromPlain is null,$"CPU line: a live process's environment gives its session id ({fromMarked is not null}, {fromPlain is null})");
+            }
+            using var live=new CpuTop(start:false);
+            var first=live.Sample();
+            var spin=System.Diagnostics.Stopwatch.StartNew(); while(spin.ElapsedMilliseconds<300) { }
+            var second=live.Sample();
+            Check(first is null && second is { } read && System.Text.RegularExpressions.Regex.IsMatch(read,@"^\S.* \d+%( · .+)?$"),
+                $"CPU line: a live reading from Windows ({second})");
         }
         Check(CpuUsage.Between((100,1000),(150,1100))==0.5 && CpuUsage.Between((100,1000),(100,1000)) is null
             && CpuUsage.Between((0,0),(200,200))==0 && TokenStripForm.CpuPercent(0.426)==43 && TokenStripForm.CpuPercent(1.3)==100 && TokenStripForm.CpuPercent(null) is null,
             "CPU meter: the share from Windows' time totals, shown in whole percents");
         using(var live=new CpuUsage()) { live.Sample(); System.Threading.Thread.Sleep(300); Check(live.Sample() is >= 0 and <= 1,"CPU meter: a live reading from Windows");
-            Check(CpuUsage.Memory() is > 0 and <= 1 && live.PageFile() is null or (>= 0 and <= 1),"Meters: live memory and page file readings from Windows"); }
+            Check(CpuUsage.Memory() is > 0 and <= 1,"Meters: a live memory reading from Windows"); }
+        // The third bar (2026-11-10): the graphics card's fan speed fills it, its temperature, whole, at the foot.
+        Check(GpuReading.Label(Gpu(30,35))=="35°" && GpuReading.Label(null)=="—" && GpuReading.Label(new GpuReading(40,null))=="—"
+            && Gpu(30,35).Fill==0.3 && Gpu(120,80).Fill==1 && new GpuReading(null,50).Fill is null,
+            "GPU meter: fan speed fills the bar (stopping at full), the temperature whole at the foot");
+        using(var gpu=new GpuSensor())
+        {
+            var started=System.Diagnostics.Stopwatch.StartNew();
+            var reading=gpu.Read();
+            var first=started.Elapsed.TotalMilliseconds;
+            started.Restart();
+            var again=gpu.Read();
+            var next=started.Elapsed.TotalMilliseconds;
+            Check(reading is null || (reading.Value.Temp is > 0 and < 120 && reading.Value.Fan is null or >= 0 && again is not null),
+                $"GPU meter: a live reading from the card's driver, or none without NVIDIA ({(reading is {} r?$"fan {r.Fan}% {r.Temp}°C":"none")}; first {first:0} ms, next {next:0.0} ms)");
+        }
         // The ring switched off in the settings: the capsule as before the ring (drawn for review).
         using(var offForm=new TokenStripForm())
         {
@@ -309,7 +442,7 @@ internal static class AutoCapsuleChecks
         foreach(var (name,names) in new[]{("weekly-named",new WeeklySplit.Names("PC","랩탑")),("weekly-default",(WeeklySplit.Names?)null)})
         {
             var line=WeeklyUsageMath.Line(new WeeklyWindow(DateTimeOffset.Parse("2026-10-17T11:00:00Z").ToUnixTimeMilliseconds(),null,38,31,0,ThisPcOnly:22),names);
-            var listed=plainTwo with { History=[new HistoryRow("1턴 전","4.7M","4분 11초","19.2k","60.65")],
+            var listed=plainTwo with { History=[new HistoryRow("1턴 전","472만","4분 11초","19.2k","60.65")],
                 HistoryFooter=line+"\n"+WeeklyUsageMath.ResetLine(DateTimeOffset.Parse("2026-10-24T11:00:00Z").ToUnixTimeMilliseconds(),compactedAt) };
             using var form=new TokenStripForm();
             _=form.Handle;
@@ -327,7 +460,7 @@ internal static class AutoCapsuleChecks
         {
             var line=WeeklyUsageMath.Line(new WeeklyWindow(DateTimeOffset.Parse("2026-10-17T11:00:00Z").ToUnixTimeMilliseconds(),null,38,19,0,ThisPcOnly:12,People:[14]),
                 new WeeklySplit.Names("PC","랩탑"),["친구1"]);
-            var listed=plainTwo with { History=[new HistoryRow("1턴 전","4.7M","4분 11초","19.2k","60.65")],
+            var listed=plainTwo with { History=[new HistoryRow("1턴 전","472만","4분 11초","19.2k","60.65")],
                 HistoryFooter=line+"\n"+WeeklyUsageMath.ResetLine(DateTimeOffset.Parse("2026-10-24T11:00:00Z").ToUnixTimeMilliseconds(),compactedAt) };
             using var form=new TokenStripForm();
             _=form.Handle;
@@ -362,6 +495,59 @@ internal static class AutoCapsuleChecks
             form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
             bitmap.Save(Path.Combine(directory,$"{name}.png"));
         }
+        // Tokens spent (user, 2026-11-11): whole 만 below 0.1억, 억 with two decimals below 1억, one from there, rounded half away from zero.
+        Check(OverlayPresentationBuilder.FormatTokenCount(72_000_000)=="0.72억" && OverlayPresentationBuilder.FormatTokenCount(70_000_000)=="0.70억"
+            && OverlayPresentationBuilder.FormatTokenCount(150_000_000)=="1.5억" && OverlayPresentationBuilder.FormatTokenCount(2_071_100)=="207만"
+            && OverlayPresentationBuilder.FormatTokenCount(15_000)=="2만" && OverlayPresentationBuilder.FormatTokenCount(9_994_999)=="999만"
+            && OverlayPresentationBuilder.FormatTokenCount(9_995_000)=="0.10억" && OverlayPresentationBuilder.FormatTokenCount(11_040_170)=="0.11억"
+            && OverlayPresentationBuilder.FormatTokenCount(99_500_000)=="1.0억" && OverlayPresentationBuilder.FormatTokenCount(99_499_999)=="0.99억"
+            && OverlayPresentationBuilder.FormatTokenCount(125_000_000)=="1.3억" && OverlayPresentationBuilder.FormatTokenCount(4_800)=="4,800"
+            && OverlayPresentationBuilder.FormatContextCount(109_000)=="109.0k",
+            "tokens spent read in 만 below 0.1억 and in 억 from there; a context's size stays in k and M");
+        // Draft: the capsule and the open list with 억, at this PC's measured turn sizes (p25, p50, p90 of 2,904 turns) and two large ones.
+        foreach(var (name,kind) in new[]{("eok-dark",OverlayThemeKind.Dark),("eok-light",OverlayThemeKind.Light)})
+        {
+            TokenSnapshot Spent(long total, string note) => new("x","x",0,0,0,0,0,0,0,default) { App=HostApp.Claude,
+                Turn=new TurnStatistics("t",total,19_200,0,290,"완료",false,null) { ModelSeconds=251.2, ModelRequests=30 },
+                CacheNote=note, CacheBar=new CacheBar(1,CacheLevel.Fresh) };
+            var capsules=new[]{(2_071_100L,"캐시 60분 남음"),(72_000_000L,"캐시 만료 109.0k"),(150_000_000L,"캐시 60분 남음")};
+            for(var i=0;i<capsules.Length;i++)
+            {
+                var p=TurnPresentation.Create(Spent(capsules[i].Item1,capsules[i].Item2));
+                using var form=new TokenStripForm();
+                form.SetPresentation(p);
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.ApplyLayout(OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:p)));
+                using var bitmap=new Bitmap(form.Width,form.Height);
+                form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
+                bitmap.Save(Path.Combine(directory,$"{name}-capsule{i}.png"));
+            }
+            {
+                string F(long n)=>OverlayPresentationBuilder.FormatTokenCount(n);
+                // Claude in front, so the Ctrl list also holds the cache sessions under the turns (user, 2026-11-11).
+                var listed=plainTwo with { Sessions=[
+                        new("00000000-0000-0000-0000-000000000001","오버레이 캐시 알림","7분 남음 · 351K",true,"18:12 자동 압축 예정",true,false,true,true),
+                        new("00000000-0000-0000-0000-000000000002","블로그 글 퇴고","24분 남음 · 212K",false,"17:21 자동 핑함 · 다음 18:11 · 유지 ~01:21",true,true,true,true),
+                        new("00000000-0000-0000-0000-000000000003","dsh-worker","41분 남음 · 168K",false,"핑 보내는 중…",false,false,true,true)],
+                    History=[
+                        new HistoryRow("1턴 전",F(949_588),"39초","76.44","80.32","Opus 5.5","99%"),
+                        new HistoryRow("2턴 전",F(2_071_100),"1분 4초","55.05","55.19","Opus 5.5","100%"),
+                        new HistoryRow("3턴 전",F(11_040_170),"4분 20초","78.14","78.48","Opus 5.5","100%"),
+                        new HistoryRow("4턴 전",F(72_000_000),"21분 3초","61.20","63.02","Opus 5.5","100%"),
+                        new HistoryRow("5턴 전",F(150_000_000),"48분 10초","58.71","60.10","Opus 5.5","100%")],
+                    HistoryFooter="캐시 유지 · 60분 남음 · 세션 캐시 읽기 99%\n이번주 17(토)~ · PC 35% · 다른 곳 0% · 계정 35%\n초기화 10-24 (토) 20:00 · 1시간 53분 남음" };
+                using var form=new TokenStripForm();
+                _=form.Handle;
+                form.SetPresentation(listed);
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.SetShowHistory(true);
+                form.ApplyLayout(OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,true,listed.HistoryPanelRows,false,
+                    Presentation:listed,CompactPanel:true)));
+                using var bitmap=new Bitmap(form.Width,form.Height);
+                form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
+                bitmap.Save(Path.Combine(directory,$"{name}-list.png"));
+            }
+        }
         // Claude in front: the Ctrl list holds the cache sessions with a 핑 button each, in both themes and empty.
         {
             SessionRow[] rows=[
@@ -377,7 +563,7 @@ internal static class AutoCapsuleChecks
             foreach(var (name,kind,shown) in new[]{("cache-list-dark",OverlayThemeKind.Dark,rows),("cache-list-light",OverlayThemeKind.Light,rows),
                 ("cache-list-empty",OverlayThemeKind.Dark,Array.Empty<SessionRow>())})
             {
-                var listed=claude with { Sessions=shown, HistoryFooter=footer, History=[new HistoryRow("1턴 전","4.7M","4분 11초","19.2k","60.65")] };
+                var listed=claude with { Sessions=shown, HistoryFooter=footer, History=[new HistoryRow("1턴 전","472만","4분 11초","19.2k","60.65")] };
                 using var form=new TokenStripForm();
                 _=form.Handle;
                 form.SetPresentation(listed);
@@ -390,8 +576,11 @@ internal static class AutoCapsuleChecks
                 bitmap.Save(Path.Combine(directory,$"{name}.png"));
                 var buttons=form.SessionButtons();
                 var layout=form.CurrentLayout!;
-                Check(listed.HistoryPanelRows==Math.Max(1,shown.Length)+5 && buttons.Count==3*shown.Length
-                    && buttons.All(b=>layout.PanelBounds.ToRectangle().Contains(b.Bounds))
+                // The one recent turn sits on top (its column header and row), then the sessions' title row (user, 2026-11-11).
+                var sessionsTop=layout.PanelBounds.ToRectangle().Bottom-OverlayRenderMetrics.Create(layout.Dpi,layout.ScalePercent).PanelPadding
+                    -layout.ExpandedRowHeight*(listed.HistoryPanelRows-3);
+                Check(listed.SessionsTopRow==3 && listed.HistoryPanelRows==3+Math.Max(1,shown.Length)+5 && buttons.Count==3*shown.Length
+                    && buttons.All(b=>layout.PanelBounds.ToRectangle().Contains(b.Bounds) && b.Bounds.Top>=sessionsTop)
                     && buttons.Chunk(3).All(r=>r[0].Kind==TokenStripForm.SessionButton.Compact && r[1].Kind==TokenStripForm.SessionButton.Keep
                         && r[2].Kind==TokenStripForm.SessionButton.Ping && r[0].Bounds.Right<r[1].Bounds.Left && r[1].Bounds.Right<r[2].Bounds.Left),
                     $"cache list ({name}): one row per session (or the line saying none) above the footer, 압축, 유지 then 핑 inside the panel");
@@ -416,7 +605,7 @@ internal static class AutoCapsuleChecks
                 new("00000000-0000-0000-0000-000000000014","보고서 정리","24분 남음 · 287K",false,"01:58 자동 압축 예정",true,false,true,true)];
             foreach(var (name,kind) in new[]{("cache-list-tried-dark",OverlayThemeKind.Dark),("cache-list-tried-light",OverlayThemeKind.Light)})
             {
-                var listed=claude with { Sessions=tried, HistoryFooter=footer, History=[new HistoryRow("1턴 전","4.7M","4분 11초","19.2k","60.65")] };
+                var listed=claude with { Sessions=tried, HistoryFooter=footer, History=[new HistoryRow("1턴 전","472만","4분 11초","19.2k","60.65")] };
                 using var form=new TokenStripForm();
                 _=form.Handle;
                 form.SetPresentation(listed);
@@ -525,7 +714,7 @@ internal static class AutoCapsuleChecks
                 && WeeklySplit.ParseReset(WeeklyUsageMath.ResetLine(DateTimeOffset.Parse("2026-10-31T11:00:00Z").ToUnixTimeMilliseconds(),
                     DateTimeOffset.Parse("2026-10-27T10:00:00Z"))) is { Left: "4일 1시간 남음" },
                 "week's time line: the reset line gives how long is left and the share of the week gone by");
-            var codexList=plainTwo with { App=HostApp.Codex, History=[new HistoryRow("1턴 전","4.7M","4분 11초","19.2k","60.65")] };
+            var codexList=plainTwo with { App=HostApp.Codex, History=[new HistoryRow("1턴 전","472만","4분 11초","19.2k","60.65")] };
             // Draft: Codex's week, whose reset line ends with its reset credits.
             foreach(var kind in new[]{OverlayThemeKind.Light,OverlayThemeKind.Dark})
             {
