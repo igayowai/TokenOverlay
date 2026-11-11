@@ -130,6 +130,52 @@ internal sealed partial class TokenStripForm : Form
             .Max(text => AutoCapsule.Width(text, font)) + 4;
     }
 
+    // The list's six fixed columns (when | tokens | time | whole-turn rate | model-request rate | cache) as parts of 95
+    // of HistoryFixedWidthDip; the two parts left sit before the model name.
+    internal static readonly int[] HistoryColumnParts = [11, 14, 21, 18, 14, 15];
+
+    // Pixels each fixed column grows past its share so its widest text fits with the gap on both sides (user,
+    // 2026-11-11: "2940만" and "2시간 11분" were cut off in the Codex list). All zero while everything fits, so a list
+    // that fit before keeps its width and its lines. Measured with the normal row height's gap, the widest a row gets.
+    internal static int[] HistoryColumnGrowth(OverlayPresentation? presentation, uint dpi, int scalePercent)
+    {
+        var growth = new int[HistoryColumnParts.Length];
+        if (presentation is null || presentation.History.Count == 0) return growth;
+        var metrics = OverlayRenderMetrics.Create(dpi, scalePercent);
+        // The panel's padding comes off both sides before the columns share what is left, so a column's share is
+        // measured against that, the narrowest the drawing gives them.
+        var whole = OverlayLayoutCalculator.ScaleOverlayDip(OverlayLayoutCalculator.HistoryFixedWidthDip, dpi, scalePercent)
+            - (2 * metrics.PanelPadding);
+        var gap = Math.Max(4, OverlayLayoutCalculator.ScaleOverlayDip(OverlayLayoutCalculator.NormalRowHeightDip, dpi, scalePercent) / 6);
+        var perPoint = (dpi == 0 ? 96 : dpi) / 72f;
+        using var label = new Font("Segoe UI", (float)metrics.LabelFontPoints * perPoint, FontStyle.Regular, GraphicsUnit.Pixel);
+        using var value = new Font("Segoe UI Semibold", (float)metrics.CompactValueFontPoints * perPoint, FontStyle.Regular, GraphicsUnit.Pixel);
+        var slot = AutoCapsule.Width(" 00초", value);
+        var rows = presentation.History;
+        int Numbers(Func<HistoryRow, string> pick, string header) =>
+            Math.Max(rows.Max(row => AutoCapsule.Width(pick(row), value)), AutoCapsule.Width(header, label)) + (2 * gap) + 2;
+        int Time(string text) => text.LastIndexOf(' ') is var split and >= 0
+            ? AutoCapsule.Width(text[..split], value) + (2 * gap) + slot + 2
+            : AutoCapsule.Width(text, value) + (2 * gap) + 2;
+        int[] need =
+        [
+            rows.Max(row => AutoCapsule.Width(row.When, label)) + gap + 2,
+            Numbers(row => row.Tokens, "소모"),
+            Math.Max(rows.Max(row => Time(row.Seconds)), AutoCapsule.Width("시간", label) + (2 * gap) + 2),
+            Numbers(row => row.Rate, "전체"),
+            Numbers(row => row.Model, "모델"),
+            Numbers(row => row.Cache, "캐시"),
+        ];
+        for (var i = 0; i < growth.Length; i++)
+            growth[i] = Math.Max(0, need[i] - (whole * HistoryColumnParts[i] / 95));
+        return growth;
+    }
+
+    // The fixed columns' width in pixels: HistoryFixedWidthDip plus whatever the columns grew by.
+    internal static int HistoryFixedWidth(OverlayPresentation? presentation, uint dpi, int scalePercent) =>
+        OverlayLayoutCalculator.ScaleOverlayDip(OverlayLayoutCalculator.HistoryFixedWidthDip, dpi, scalePercent)
+        + HistoryColumnGrowth(presentation, dpi, scalePercent).Sum();
+
     // Width in pixels the list panel needs for its footer line (text plus the panel's own padding), 0 without one.
     internal static int HistoryFooterWidth(OverlayPresentation? presentation, uint dpi, int scalePercent)
     {

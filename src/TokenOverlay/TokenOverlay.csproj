@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>TokenOverlay</AssemblyName>
     <RootNamespace>TokenOverlay</RootNamespace>
-    <Version>0.10.2</Version>
+    <Version>0.10.3</Version>
     <Authors>soleillevant0125, igayowai</Authors>
     <Product>TokenOverlay</Product>
     <Description>Token, time and speed overlay for the Codex and Claude desktop apps.</Description>

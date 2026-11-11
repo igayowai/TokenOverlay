@@ -98,7 +98,8 @@ internal static class OverlayLayoutCalculator
     private const int PrimaryOnlyWidthDip = 116;
     private const int CollapsedHeightDip = 34;
     private const int ExpandedWidthDip = 360;
-    // The recent-turn list: six fixed columns plus a model-name column as wide as the longest name shown.
+    // The recent-turn list: six fixed columns (each widened to fit its text) plus a model-name column as wide as the
+    // longest name shown.
     internal const int HistoryFixedWidthDip = 406;
     // A list without turns is only as wide as its footer.
     // The session list is as wide as its rows (or its footer).
@@ -106,9 +107,9 @@ internal static class OverlayLayoutCalculator
         ? request.Presentation?.Sessions is not null ? Math.Max(Math.Max(TokenStripForm.SessionListWidth(request.Presentation, dpi, scalePercent),
             TokenStripForm.HistoryFooterWidth(request.Presentation, dpi, scalePercent)),
             request.Presentation.History.Count == 0 ? 0
-                : ScaleOverlayDip(HistoryFixedWidthDip, dpi, scalePercent) + TokenStripForm.HistoryNameWidth(request.Presentation, dpi, scalePercent))
+                : TokenStripForm.HistoryFixedWidth(request.Presentation, dpi, scalePercent) + TokenStripForm.HistoryNameWidth(request.Presentation, dpi, scalePercent))
         : request.Presentation?.History.Count is null or 0 ? TokenStripForm.HistoryFooterWidth(request.Presentation, dpi, scalePercent)
-        : Math.Max(ScaleOverlayDip(HistoryFixedWidthDip, dpi, scalePercent) + TokenStripForm.HistoryNameWidth(request.Presentation, dpi, scalePercent),
+        : Math.Max(TokenStripForm.HistoryFixedWidth(request.Presentation, dpi, scalePercent) + TokenStripForm.HistoryNameWidth(request.Presentation, dpi, scalePercent),
             TokenStripForm.HistoryFooterWidth(request.Presentation, dpi, scalePercent))
         : ScaleOverlayDip(ExpandedWidthDip, dpi, scalePercent);
     private const int CapsulePanelGapDip = 6;
@@ -116,7 +117,7 @@ internal static class OverlayLayoutCalculator
     private const int TitleLeftReserveDip = 160;
     private const int PanelChromeHeightDip = 122;
     private const int CompactPanelChromeHeightDip = 54;
-    private const int NormalRowHeightDip = 30;
+    internal const int NormalRowHeightDip = 30;
     private const int MinimumRowHeightDip = 24;
 
     private const int LegacyOutsideGapDip = 10;
@@ -877,7 +878,7 @@ internal static class OverlayLayoutCalculator
     private static int ScaleSystemDip(double dip, uint dpi) =>
         (int)Math.Round(dip * dpi / 96d, MidpointRounding.AwayFromZero);
 
-    private static int ScaleOverlayDip(double dip, uint dpi, int scalePercent) =>
+    internal static int ScaleOverlayDip(double dip, uint dpi, int scalePercent) =>
         (int)Math.Round(
             dip * dpi / 96d * ManualAttachmentRules.SanitizeScale(scalePercent) / 100d,
             MidpointRounding.AwayFromZero);

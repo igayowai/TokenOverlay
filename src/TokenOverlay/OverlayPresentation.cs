@@ -117,20 +117,17 @@ internal static class OverlayPresentationBuilder
             null);
     }
 
-    // Tokens spent, rounded half away from zero (user, 2026-11-11: "K말고 억으로", then "0.1억 미만은 만 단위"):
-    // below 0.1억 in whole 만 ("207만"), then 억 with two decimals below 1억 ("0.72억") and one from there ("1.5억").
-    // Each step is chosen on the rounded value, so 999.5만 reads "0.10억" and 0.996억 reads "1.0억". Under 1만 the
-    // count itself shows ("4,800"), since "0만" would hide it.
+    // Tokens spent, rounded half away from zero (user, 2026-11-11: "K말고 억으로", then "0.0억이나 0.00억은 안 와닿네,
+    // 5999만 이렇게 가다가 1억 넘으면 1.N억"): below 1억 in whole 만 ("207만", "4826만"), from 1억 with one decimal
+    // ("1.5억"). The step is chosen on the rounded value, so 9999.5만 reads "1.0억". Under 1만 the count itself shows
+    // ("4,800"), since "0만" would hide it.
     public static string FormatTokenCount(long value)
     {
         if (value < 10_000) return value.ToString("N0", CultureInfo.InvariantCulture);
         var man = Math.Round(value / 10_000d, MidpointRounding.AwayFromZero);
-        if (man < 1_000) return man.ToString("0", CultureInfo.InvariantCulture) + "만";
-        var eok = value / 100_000_000d;
-        var two = Math.Round(eok, 2, MidpointRounding.AwayFromZero);
-        return two < 1
-            ? two.ToString("0.00", CultureInfo.InvariantCulture) + "억"
-            : Math.Round(eok, 1, MidpointRounding.AwayFromZero).ToString("0.0", CultureInfo.InvariantCulture) + "억";
+        return man < 10_000
+            ? man.ToString("0", CultureInfo.InvariantCulture) + "만"
+            : Math.Round(value / 100_000_000d, 1, MidpointRounding.AwayFromZero).ToString("0.0", CultureInfo.InvariantCulture) + "억";
     }
 
     // A context's size stays in k and M ("109.0k", "1.20M"): in 억 every context would read 0.00억 or 0.01억.

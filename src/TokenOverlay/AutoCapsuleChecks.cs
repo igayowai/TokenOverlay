@@ -495,22 +495,22 @@ internal static class AutoCapsuleChecks
             form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
             bitmap.Save(Path.Combine(directory,$"{name}.png"));
         }
-        // Tokens spent (user, 2026-11-11): whole 만 below 0.1억, 억 with two decimals below 1억, one from there, rounded half away from zero.
-        Check(OverlayPresentationBuilder.FormatTokenCount(72_000_000)=="0.72억" && OverlayPresentationBuilder.FormatTokenCount(70_000_000)=="0.70억"
+        // Tokens spent (user, 2026-11-11): whole 만 below 1억, 억 with one decimal from there, rounded half away from zero.
+        Check(OverlayPresentationBuilder.FormatTokenCount(72_000_000)=="7200만" && OverlayPresentationBuilder.FormatTokenCount(48_263_448)=="4826만"
             && OverlayPresentationBuilder.FormatTokenCount(150_000_000)=="1.5억" && OverlayPresentationBuilder.FormatTokenCount(2_071_100)=="207만"
-            && OverlayPresentationBuilder.FormatTokenCount(15_000)=="2만" && OverlayPresentationBuilder.FormatTokenCount(9_994_999)=="999만"
-            && OverlayPresentationBuilder.FormatTokenCount(9_995_000)=="0.10억" && OverlayPresentationBuilder.FormatTokenCount(11_040_170)=="0.11억"
-            && OverlayPresentationBuilder.FormatTokenCount(99_500_000)=="1.0억" && OverlayPresentationBuilder.FormatTokenCount(99_499_999)=="0.99억"
+            && OverlayPresentationBuilder.FormatTokenCount(15_000)=="2만" && OverlayPresentationBuilder.FormatTokenCount(11_040_170)=="1104만"
+            && OverlayPresentationBuilder.FormatTokenCount(99_994_999)=="9999만" && OverlayPresentationBuilder.FormatTokenCount(99_995_000)=="1.0억"
+            && OverlayPresentationBuilder.FormatTokenCount(100_000_000)=="1.0억" && OverlayPresentationBuilder.FormatTokenCount(1_049_999_999)=="10.5억"
             && OverlayPresentationBuilder.FormatTokenCount(125_000_000)=="1.3억" && OverlayPresentationBuilder.FormatTokenCount(4_800)=="4,800"
             && OverlayPresentationBuilder.FormatContextCount(109_000)=="109.0k",
-            "tokens spent read in 만 below 0.1억 and in 억 from there; a context's size stays in k and M");
+            "tokens spent read in 만 below 1억 and in 억 with one decimal from there; a context's size stays in k and M");
         // Draft: the capsule and the open list with 억, at this PC's measured turn sizes (p25, p50, p90 of 2,904 turns) and two large ones.
         foreach(var (name,kind) in new[]{("eok-dark",OverlayThemeKind.Dark),("eok-light",OverlayThemeKind.Light)})
         {
             TokenSnapshot Spent(long total, string note) => new("x","x",0,0,0,0,0,0,0,default) { App=HostApp.Claude,
                 Turn=new TurnStatistics("t",total,19_200,0,290,"완료",false,null) { ModelSeconds=251.2, ModelRequests=30 },
                 CacheNote=note, CacheBar=new CacheBar(1,CacheLevel.Fresh) };
-            var capsules=new[]{(2_071_100L,"캐시 60분 남음"),(72_000_000L,"캐시 만료 109.0k"),(150_000_000L,"캐시 60분 남음")};
+            var capsules=new[]{(2_071_100L,"캐시 60분 남음"),(48_263_448L,"캐시 만료 109.0k"),(150_000_000L,"캐시 60분 남음")};
             for(var i=0;i<capsules.Length;i++)
             {
                 var p=TurnPresentation.Create(Spent(capsules[i].Item1,capsules[i].Item2));
@@ -547,6 +547,36 @@ internal static class AutoCapsuleChecks
                 form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
                 bitmap.Save(Path.Combine(directory,$"{name}-list.png"));
             }
+            {
+                // Codex in front (user, 2026-11-11 screenshot): "2940만" and "2시간 11분" were cut off in the narrow list.
+                var listed=plainTwo with { History=[
+                        new HistoryRow("1턴 전","2940만","2시간 11분","14.01","22.19","6 Astra","99%"),
+                        new HistoryRow("2턴 전","1388만","36분 40초","22.76","23.90","6 Astra","99%"),
+                        new HistoryRow("3턴 전","1250만","26분 14초","22.80","—","6 Astra","95%"),
+                        new HistoryRow("4턴 전","186만","8분 36초","27.61","—","6 Astra","92%")],
+                    HistoryFooter="마지막 요청 캐시히트 99.0% · 세션 캐시 읽기 98%\n이번주 6(금)~ · 나 78% · 다른 곳 22% · 계정 100%\n초기화 11-13 (금) 17:22 · 1일 23시간 남음" };
+                using var form=new TokenStripForm();
+                _=form.Handle;
+                form.SetPresentation(listed);
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.SetShowHistory(true);
+                form.ApplyLayout(OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,true,listed.HistoryPanelRows,false,
+                    Presentation:listed,CompactPanel:true)));
+                using var bitmap=new Bitmap(form.Width,form.Height);
+                form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
+                bitmap.Save(Path.Combine(directory,$"{name}-codex-list.png"));
+            }
+        }
+        // A list column grows when its text would not fit its share, and only then (user, 2026-11-11: cut-off "2940만").
+        {
+            HistoryRow[] wide=[new("1턴 전","9999만","12시간 59분","14.01","22.19","6 Astra","100%")];
+            HistoryRow[] narrow=[new("1턴 전","95만","39초","76.44","80.32","Opus 5.5","99%")];
+            var grown=TokenStripForm.HistoryColumnGrowth(plainTwo with { History=wide },144,100);
+            var kept=TokenStripForm.HistoryColumnGrowth(plainTwo with { History=narrow },144,100);
+            Check(grown[1]>0 && grown[2]>0 && kept.All(g=>g==0)
+                && TokenStripForm.HistoryFixedWidth(plainTwo with { History=wide },144,100)
+                    ==TokenStripForm.HistoryFixedWidth(plainTwo with { History=narrow },144,100)+grown.Sum(),
+                "a list column widens to fit 9999만 and 12시간 59분, and a list whose text fits keeps its width");
         }
         // Claude in front: the Ctrl list holds the cache sessions with a 핑 button each, in both themes and empty.
         {

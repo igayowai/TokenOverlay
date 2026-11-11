@@ -460,7 +460,9 @@ internal sealed partial class TokenStripForm
             var historyTop = bounds.Bottom - padding - (layout.ExpandedRowHeight * _presentation.HistoryPanelRows);
             // Columns: when | tokens | whole-turn seconds | whole-turn rate | model-request rate | cache read | model name
             // The fixed columns share what the name column leaves; their edges are parts of 95.
-            var fixedWidth = content.Width - HistoryNameWidth(_presentation, layout.Dpi, layout.ScalePercent);
+            // A column whose text would not fit its share grows by what it lacks, and the lines after it move right with it.
+            var growth = HistoryColumnGrowth(_presentation, layout.Dpi, layout.ScalePercent);
+            var fixedWidth = content.Width - HistoryNameWidth(_presentation, layout.Dpi, layout.ScalePercent) - growth.Sum();
             int Edge(int part) => content.Left + (fixedWidth * part / 95);
             void Cell(string text, Font font, Color color, int left, int right, int y, bool alignRight) =>
                 TextRenderer.DrawText(graphics, text, font, new Rectangle(left, y, right - left, layout.ExpandedRowHeight), color,
@@ -468,7 +470,13 @@ internal sealed partial class TokenStripForm
             // A table (user, 2026-11-11: "표 형식으로 칸 나눠놔야 구분감이 사는듯"): a vertical line between each two
             // columns, from the column header down to the last turn. Numbers keep a small gap from the line on their right;
             // the column header is centred in its cell (user, 2026-11-11, picked over headers right and a centred mix).
-            int[] lines = [Edge(11), Edge(25), Edge(46), Edge(64), Edge(78), Edge(93)];
+            var lines = new int[HistoryColumnParts.Length];
+            for (int i = 0, part = 0, grown = 0; i < lines.Length; i++)
+            {
+                part += HistoryColumnParts[i];
+                grown += growth[i];
+                lines[i] = Edge(part) + grown;
+            }
             var gap = Math.Max(4, layout.ExpandedRowHeight / 6);
             void Number(string text, Font font, Color color, int left, int right, int y, bool header) =>
                 TextRenderer.DrawText(graphics, text, font, header
