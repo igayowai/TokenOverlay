@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>TokenOverlay</AssemblyName>
+    <RootNamespace>TokenOverlay</RootNamespace>
+    <Version>0.10.4</Version>
+    <Authors>soleillevant0125, igayowai</Authors>
+    <Product>TokenOverlay</Product>
+    <Description>Token, time and speed overlay for the Codex and Claude desktop apps.</Description>
+    <RepositoryUrl>https://github.com/igayowai/TokenOverlay</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PublishSingleFile Condition="'$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
+    <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract Condition="'$(RuntimeIdentifier)' != ''">true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile Condition="'$(SelfContained)' == 'true'">true</EnableCompressionInSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Deterministic>true</Deterministic>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+  </PropertyGroup>
+  <!-- scripts/release.ps1 -TestFeed: a signed test build that updates from a local folder (see AppUpdater). -->
+  <PropertyGroup Condition="'$(TokenOverlayTestFeed)' == 'true'">
+    <DefineConstants>$(DefineConstants);TEST_FEED</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="app.ico" LogicalName="TokenOverlay.app.ico" />
+  </ItemGroup>
+  <!-- The partner Claude Code mod, read in place from the installed folder once switched on (see ClaudeModSetup). -->
+  <ItemGroup>
+    <None Include="..\claude-mod\**\*" Exclude="..\claude-mod\**\.claude-plugin\types\**;..\claude-mod\**\*.test.ts"
+      LinkBase="claude-mod" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Velopack" Version="1.2.161" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+  </ItemGroup>
+</Project>
