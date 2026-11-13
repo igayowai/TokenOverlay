@@ -1,5 +1,0 @@
-{
-  "name": "tokenoverlay",
-  "owner": { "name": "igayowai" },
-  "plugins": [{ "name": "tokenoverlay-cache", "source": "./tokenoverlay-cache", "description": "TokenOverlay 짝 확장: 캐시 유지 핑과 만료 5분 전 자동 압축" }]
-}
