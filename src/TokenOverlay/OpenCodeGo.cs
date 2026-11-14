@@ -20,12 +20,21 @@ internal sealed class OpenCodeGoMonitor : IDisposable
         { Timeout = TimeSpan.FromSeconds(15) };
 
     private readonly KeyFile _key;
+    private readonly string _name;
+    private readonly string _log;
     private System.Threading.Timer? _timer;
     private int _busy;
     private volatile FreeTokenTable? _table;
     private Window[]? _last;
 
-    public OpenCodeGoMonitor(string? keyFile = null) => _key = new(keyFile ?? KeyFile.InAppData("opencode-go-key.dpapi"), "opencode-go");
+    // A second Go account has its own key file and name (user, 2026-11-14: "오픈코드 계정 2개돼서 api도 2개됐는데"):
+    // scripts/save-key.ps1 opencode2 → opencode-go-key-2.dpapi, titled "OpenCode Go 2".
+    public OpenCodeGoMonitor(string? keyFile = null, string name = "OpenCode Go", string log = "opencode-go")
+    {
+        _key = new(keyFile ?? KeyFile.InAppData("opencode-go-key.dpapi"), log);
+        _name = name;
+        _log = log;
+    }
 
     public FreeTokenTable? Table => _table;
 
@@ -55,23 +64,23 @@ internal sealed class OpenCodeGoMonitor : IDisposable
                 using var response = Client.Send(request);
                 if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                 {
-                    DiagnosticLog.Info("opencode-go", "usage refused: " + (int)response.StatusCode);
-                    _table = Build(null, now, response.StatusCode == HttpStatusCode.Forbidden ? "구독 확인 안 됨" : "키가 맞지 않음");
+                    DiagnosticLog.Info(_log, "usage refused: " + (int)response.StatusCode);
+                    _table = Build(null, now, response.StatusCode == HttpStatusCode.Forbidden ? "구독 확인 안 됨" : "키가 맞지 않음", _name);
                     return;
                 }
                 response.EnsureSuccessStatusCode();
                 using var reader = new StreamReader(response.Content.ReadAsStream());
                 _last = Parse(reader.ReadToEnd()) ?? throw new JsonException("unknown shape");
-                _table = Build(_last, now, null);
+                _table = Build(_last, now, null, _name);
             }
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
             {
-                DiagnosticLog.Info("opencode-go", "usage not read: " + e.GetType().Name);
+                DiagnosticLog.Info(_log, "usage not read: " + e.GetType().Name);
                 var at = now.ToOffset(TimeSpan.FromHours(9)).ToString("HH:mm", CultureInfo.InvariantCulture);
-                _table = Build(_last, now, (_last is null ? "조회 실패 " : "갱신 실패 ") + at);
+                _table = Build(_last, now, (_last is null ? "조회 실패 " : "갱신 실패 ") + at, _name);
             }
         }
-        catch (Exception e) { DiagnosticLog.Error("opencode-go", e); }
+        catch (Exception e) { DiagnosticLog.Error(_log, e); }
         finally { Volatile.Write(ref _busy, 0); }
     }
 
@@ -94,10 +103,10 @@ internal sealed class OpenCodeGoMonitor : IDisposable
     }
 
     // The table: its title says when it was read (KST) or what went wrong; without numbers the rows show dashes.
-    internal static FreeTokenTable Build(IReadOnlyList<Window>? windows, DateTimeOffset now, string? problem)
+    internal static FreeTokenTable Build(IReadOnlyList<Window>? windows, DateTimeOffset now, string? problem, string name = "OpenCode Go")
     {
         var kst = TimeSpan.FromHours(9);
-        var title = "OpenCode Go · " + (problem ?? now.ToOffset(kst).ToString("HH:mm", CultureInfo.InvariantCulture) + " 조회");
+        var title = name + " · " + (problem ?? now.ToOffset(kst).ToString("HH:mm", CultureInfo.InvariantCulture) + " 조회");
         var korean = CultureInfo.GetCultureInfo("ko-KR");
         var rows = Windows.Select(window =>
         {
@@ -106,7 +115,7 @@ internal sealed class OpenCodeGoMonitor : IDisposable
             var percent = Math.Clamp(w.Percent, 0, 100);
             return new HistoryRow(w.Name, $"{percent}%", w.ResetsAt is { } at ? Until(at - now) : "—", $"{100 - percent}%", window.Limit,
                 ModelName: w.ResetsAt is { } reset ? reset.ToOffset(kst).ToString("MM-dd (ddd) HH:mm", korean) : "—",
-                Cache: w.Reached ? "막힘" : "정상");
+                Cache: w.Reached ? TokenStripForm.BlockedState : "정상");
         }).ToArray();
         return new(title, rows, Header);
     }

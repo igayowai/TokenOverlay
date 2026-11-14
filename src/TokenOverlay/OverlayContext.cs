@@ -115,6 +115,8 @@ internal sealed partial class OverlayContext : ApplicationContext
         _codexWeekly = new CodexWeeklyMonitor(sessionRoot, _driveLink.Current, _accounts);
         _codexWeekly.Start();
         _openCodeGo.Start();
+        _openCodeGo2.Start();
+        _openCodeGo3.Start();
         _anthropicCredits.Start();
         DriveShare.DeviceAdded += OnDeviceAdded;
         _cacheWatch.Enabled = _settings.CacheWarningEnabled;
@@ -559,23 +561,31 @@ internal sealed partial class OverlayContext : ApplicationContext
     // 빼자 저거는 유료청구때문에 못쓰겠다", after a day's limit passed went to the paid tier); OpenAiFreeTokens.cs stays
     // with its checks, not started. Without a key file its part is left out.
     private readonly OpenCodeGoMonitor _openCodeGo = new();
+    // The second Go account, shown above the first (user, 2026-11-14).
+    private readonly OpenCodeGoMonitor _openCodeGo2 = new(KeyFile.InAppData("opencode-go-key-2.dpapi"), "OpenCode Go 2", "opencode-go-2");
+    // The third, above the second (user, 2026-11-15: "오픈코드 계정 3도 만듦 ... 오픈코드2 위에 붙여줘").
+    private readonly OpenCodeGoMonitor _openCodeGo3 = new(KeyFile.InAppData("opencode-go-key-3.dpapi"), "OpenCode Go 3", "opencode-go-3");
     private readonly AnthropicCreditMonitor _anthropicCredits = new();
 
+    private FreeTokenTable[] GoTables() =>
+        new[] { _openCodeGo3.Table, _openCodeGo2.Table, _openCodeGo.Table }.OfType<FreeTokenTable>().ToArray();
+
     private OverlayPresentation WithFreeTokens(OverlayPresentation p) =>
-        WithTables(p, _openCodeGo.Table, _anthropicCredits.Left);
+        WithTables(p, GoTables(), _anthropicCredits.Left);
 
     // A PC without the Go key (a friend's) keeps the recent turns, as before (user, 2026-11-13, before 0.10.4: "키
     // 없으면 최근 턴").
-    internal static OverlayPresentation WithTables(OverlayPresentation p, FreeTokenTable? go, string? credit) =>
-        p with { History = go is null ? p.History : [], GoTable = go, CreditLeft = credit };
+    internal static OverlayPresentation WithTables(OverlayPresentation p, IReadOnlyList<FreeTokenTable> go, string? credit) =>
+        p with { History = go.Count == 0 ? p.History : [], GoTables = go, CreditLeft = credit };
 
     // New numbers read since the list was last built: put them in, and lay the open list out again.
     private void RefreshFreeTokens()
     {
-        var go = _openCodeGo.Table;
+        var go = GoTables();
         var credit = _anthropicCredits.Left;
-        if ((go is null || _presentation.History.Count == 0)
-            && (go is null ? _presentation.GoTable is null : go.Same(_presentation.GoTable))
+        var shown = _presentation.GoTables;
+        if ((go.Length == 0 || _presentation.History.Count == 0)
+            && go.Length == shown.Count && go.Select((table, i) => table.Same(shown[i])).All(same => same)
             && credit == _presentation.CreditLeft) return;
         _presentation = WithFreeTokens(_presentation);
         _form.SetPresentation(_presentation);
@@ -855,6 +865,8 @@ internal sealed partial class OverlayContext : ApplicationContext
             _weekly.Dispose();
             _codexWeekly.Dispose();
             _openCodeGo.Dispose();
+            _openCodeGo2.Dispose();
+            _openCodeGo3.Dispose();
             _anthropicCredits.Dispose();
             _updateTimer.Dispose();
             _cpu.Dispose();

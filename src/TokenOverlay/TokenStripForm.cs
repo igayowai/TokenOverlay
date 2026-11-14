@@ -197,6 +197,8 @@ internal sealed partial class TokenStripForm : Form
 
     // The week's login line: what happened in the label font, then "눌러서 다시 로그인" larger, bold and red.
     internal static Font LoginActionFont(Font font) => new(font.FontFamily, font.Size * 1.15f, FontStyle.Bold, font.Unit);
+    // A Go window's state when its limit is reached; such a row is drawn on red.
+    internal const string BlockedState = "막힘";
     internal static readonly Color LoginRedDark = Color.FromArgb(255, 92, 92);
     internal static readonly Color LoginRedLight = Color.FromArgb(206, 32, 41);
     internal static int LoginLineWidth(string line, Font font)

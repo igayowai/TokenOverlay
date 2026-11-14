@@ -1082,17 +1082,18 @@ internal static class ClaudeChecks
                 && CacheWatch.WorkUnderWay([work[0], Done("byxo93vxe", "completed")]) && !CacheWatch.WorkUnderWay([side]) && !CacheWatch.WorkUnderWay([prompt, answered]),
                 "turn end: background work is under way from its start (a command, an agent, a Monitor) until its end notification");
 
-            // 2026-11-10, the user: an answer that ends a line with "지금 /compact 하기 좋음" is compacted at once (150k and
-            // up), unless background work is under way. As the engine writes it: Korean as it is, quotes in text escaped.
+            // 2026-11-10, the user: an answer that ends a line with "지금 /compact 하기 좋음" is compacted (150k and up),
+            // unless background work is under way; 2026-11-15 ("3분 여유좀 줘"): after 3 minutes of quiet, not at once,
+            // though within 30k of the threshold still at once. As the engine writes it: Korean as it is, quotes in text escaped.
             string Answer(string text) =>
                 "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"" + text + "\"}]}}";
             var pauseAnswer = Answer("돌고 있는 백그라운드 작업은 없음. 지금 /compact 하기 좋음.");
             var pauseMidAnswer = Answer("지금 /compact 하기 좋음.\\n\\n남은 일은 없음.");
             var quotedAnswer = Answer("\\\"지금 /compact 하기 좋음\\\"이 뜬 경우를 말함.");
             var stopFeedback = "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":\"Stop hook feedback: x\"}}";
-            int Pause(string[] lines, int code = 10, long context = 200_000)
+            int Pause(string[] lines, int code = 10, long context = 200_000, double quiet = 3.1)
             {
-                Log(lines, quiet: 0);
+                Log(lines, quiet: quiet);
                 return Fresh(w => Asked(w, code: code, context: context, threshold: 467_000));
             }
             var paused = Pause([prompt, pauseAnswer, closing]);
@@ -1102,13 +1103,15 @@ internal static class ClaudeChecks
             var pausedWork = Pause([prompt, Said("assistant", "tool_use", "tool_use"), started, pauseAnswer, closing]);
             var pausedOwn = Pause([prompt, pauseAnswer, closing], code: 9);
             var pausedOwnLarge = Pause([prompt, pauseAnswer, closing], code: 9, context: 450_000);
-            var pausedLarge = Pause([prompt, pauseAnswer, closing], context: 450_000);
+            var pausedLarge = Pause([prompt, pauseAnswer, closing], context: 450_000, quiet: 0);
+            var pausedSoon = Pause([prompt, pauseAnswer, closing], quiet: 2.5);
+            var pausedLargeSoon = Pause([prompt, pauseAnswer, closing], context: 400_000, quiet: 2.5);
             var pausedThenHook = Pause([prompt, pauseAnswer, closing, stopFeedback, answered, closing]);
             var pausedLastTurn = Pause([prompt, pauseAnswer, closing, prompt, answered, closing]);
             Log([prompt, answered, closing]);
             Check(paused == 1 && pausedMid == 1 && quoted == 0 && pausedSmall == 0 && pausedWork == 0 && pausedOwn == 1 && pausedOwnLarge == 0
-                && pausedLarge == 1 && pausedThenHook == 1 && pausedLastTurn == 0,
-                $"turn end: an answer that says \"지금 /compact 하기 좋음\" is compacted at once from 150k, not while background work runs, not when only quoted or said a turn before ({paused}{pausedMid}{quoted}{pausedSmall}{pausedWork}{pausedOwn}{pausedOwnLarge}{pausedLarge}{pausedThenHook}{pausedLastTurn})");
+                && pausedLarge == 1 && pausedThenHook == 1 && pausedLastTurn == 0 && pausedSoon == 0 && pausedLargeSoon == 0,
+                $"turn end: an answer that says \"지금 /compact 하기 좋음\" is compacted after 3 min quiet from 150k (at once near the threshold), not while background work runs, not when only quoted or said a turn before ({paused}{pausedMid}{quoted}{pausedSmall}{pausedWork}{pausedOwn}{pausedOwnLarge}{pausedLarge}{pausedThenHook}{pausedLastTurn}{pausedSoon}{pausedLargeSoon})");
 
             // 2026-11-13, the user's "압축이 중복으로": a turn-end request asked 1 minute ago and not taken up is withdrawn
             // once the session made another request (more than 2 seconds) after it, or was compacted after it; kept while

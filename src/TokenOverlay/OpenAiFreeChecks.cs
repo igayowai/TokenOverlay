@@ -111,17 +111,30 @@ internal static class OpenAiFreeChecks
         // The open list, in place of the recent turns, over the weekly line (drawn for review).
         var basePresentation = TurnPresentation.Create(null);
         var turns = basePresentation with { History = [new HistoryRow("1턴 전", "1k", "1초", "1", "1")] };
-        Check(OverlayContext.WithTables(turns, null, null) is { History.Count: 1, GoTable: null, HasTable: true }
-            && OverlayContext.WithTables(turns, goTable, creditLeft) is { History.Count: 0, GoTable: not null },
+        Check(OverlayContext.WithTables(turns, [], null) is { History.Count: 1, GoTables.Count: 0, HasTable: true }
+            && OverlayContext.WithTables(turns, [goTable], creditLeft) is { History.Count: 0, GoTables.Count: 1 },
             "without the Go key the recent turns stay; with it Go's table takes their place");
+        var goSecond = OpenCodeGoMonitor.Build(windows, now, null, "OpenCode Go 2");
+        Check(goSecond.Title == "OpenCode Go 2 · 00:30 조회", "the second Go account's table is titled with its number");
+        var goThird = OpenCodeGoMonitor.Build(windows, now, null, "OpenCode Go 3");
         CodexWindowInfo Host(uint dpi, int width) => new(new IntPtr(1), new IntRect(0, 0, width, 1200), new IntRect(0, 0, width, 1200), null,
             new IntRect(0, 0, width, 1200), dpi, new WindowChromeMetrics(36, 24, 4, 4, 4));
-        foreach (var (name, kind) in new[] { ("openai-free-light", OverlayThemeKind.Light), ("openai-free-dark", OverlayThemeKind.Dark) })
+        foreach (var (name, kind, accounts) in new[] { ("openai-free-light", OverlayThemeKind.Light, 1), ("openai-free-dark", OverlayThemeKind.Dark, 1),
+                     ("opencode-two-light", OverlayThemeKind.Light, 2), ("opencode-two-dark", OverlayThemeKind.Dark, 2),
+                     ("opencode-three-light", OverlayThemeKind.Light, 3), ("opencode-three-dark", OverlayThemeKind.Dark, 3) })
         {
             var listed = basePresentation with { History = [],
-                HistoryFooter = "이번주 17(토)~ · PC 35% · 다른 곳 0% · 계정 35%\n초기화 11-14 (토) 20:00 · 2일 18시간 남음", GoTable = goTable, CreditLeft = creditLeft, App = HostApp.Claude };
-            Check(listed is { TurnRows: 0, GoTitle: false, GoTop: 0, GoRows: 4, TableRows: 4, HistoryPanelRows: 8 },
-                "Go's header and three rows under the panel's title, then the week with Anthropic's dollars in front of the devices, its bar, time line and reset line");
+                HistoryFooter = "이번주 17(토)~ · PC 35% · 다른 곳 0% · 계정 35%\n초기화 11-14 (토) 20:00 · 2일 18시간 남음",
+                GoTables = accounts switch { 3 => [goThird, goSecond, goTable], 2 => [goSecond, goTable], _ => [goTable] },
+                CreditLeft = creditLeft, App = HostApp.Claude };
+            Check(accounts switch
+                {
+                    1 => !listed.GoTitle(0) && listed.GoTop(0) == 0 && listed is { TurnRows: 0, TableRows: 4, HistoryPanelRows: 8 },
+                    2 => !listed.GoTitle(0) && listed.GoTitle(1) && listed.GoTop(1) == 5 && listed is { TableRows: 9, HistoryPanelRows: 13 },
+                    _ => !listed.GoTitle(0) && listed.GoTitle(2) && listed.GoTop(1) == 5 && listed.GoTop(2) == 10
+                         && listed is { TableRows: 14, HistoryPanelRows: 18 },
+                },
+                "Go's header and three rows under the panel's title (a second account on top, the first under its own title), then the week with Anthropic's dollars in front of the devices, its bar, time line and reset line");
             using var form = new TokenStripForm();
             _ = form.Handle;
             form.SetPresentation(listed);

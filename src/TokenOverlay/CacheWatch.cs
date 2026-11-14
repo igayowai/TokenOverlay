@@ -100,6 +100,9 @@ internal sealed partial class CacheWatch : IDisposable
     internal const int TurnEndAskedAgainCode = 10;
     internal const string TurnEndPrefix = "turnend-";
     internal static readonly TimeSpan TurnEndWait = TimeSpan.FromMinutes(2);
+    // After an answer that says "지금 /compact 하기 좋음": 3 minutes of quiet, for the person to read it or answer (the
+    // user, 2026-11-15: "3분 여유좀 줘"; at once from 2026-11-10 till then). Within 30k of the threshold still at once.
+    internal static readonly TimeSpan PauseWait = TimeSpan.FromMinutes(3);
     internal const long TurnEndNearThreshold = 30_000;
     private static readonly TimeSpan TurnEndEvery = TimeSpan.FromSeconds(5);
     // Without the stop hooks' closing line (a PC with none), a turn counts as ended once its log is this quiet.
@@ -144,7 +147,7 @@ internal sealed partial class CacheWatch : IDisposable
             if ((!large && !pausable) || LogOf(root, id) is not { } log) continue;
             var near = large && NearThreshold(bridge);
             var state = TurnEndState(log, now, near ? TimeSpan.Zero : large ? TurnEndWait : TimeSpan.MaxValue, holdForWork: !near,
-                pauseAtOnce: pausable, out var paused);
+                pausable: pausable, out var paused);
             if (state == TurnEnd.HeldForWork && (!_turnEndHeld.TryGetValue(id, out var held) || held != bridge.LastAt))
             {
                 _turnEndHeld[id] = bridge.LastAt!.Value;
@@ -155,7 +158,7 @@ internal sealed partial class CacheWatch : IDisposable
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
             _turnEndAsked[id] = bridge.LastAt!.Value;
             asked++;
-            DiagnosticLog.Info("cache", $"compact asked at turn end (build {bridge.Code}, {bridge.Context / 1000}K, {(near ? "near the threshold, at once" : paused ? "the answer said to compact, at once" : "after 2 min quiet")})");
+            DiagnosticLog.Info("cache", $"compact asked at turn end (build {bridge.Code}, {bridge.Context / 1000}K, {(near ? "near the threshold, at once" : paused ? "the answer said to compact, after 3 min quiet" : "after 2 min quiet")})");
         }
         return asked;
     }
@@ -224,9 +227,10 @@ internal sealed partial class CacheWatch : IDisposable
 
     // The same, then the log quiet for `wait` (nothing written since: no new prompt, no notification), and with
     // `holdForWork` no background work the main loop started still waiting for its end notification. With
-    // `pauseAtOnce`, a turn whose answer said the work pauses ("지금 /compact 하기 좋음", see Paused) waits for nothing:
-    // the user's ask of 2026-11-10 ("이런 경우는 즉시 압축").
-    internal static TurnEnd TurnEndState(string log, DateTimeOffset now, TimeSpan wait, bool holdForWork, bool pauseAtOnce, out bool paused)
+    // `pausable`, a turn whose answer said the work pauses ("지금 /compact 하기 좋음", see Paused) waits PauseWait (3 min)
+    // instead, or nothing when `wait` is already nothing (near the threshold). At once from the user's ask of 2026-11-10
+    // ("이런 경우는 즉시 압축") till the user's "3분 여유좀 줘" of 2026-11-15.
+    internal static TurnEnd TurnEndState(string log, DateTimeOffset now, TimeSpan wait, bool holdForWork, bool pausable, out bool paused)
     {
         paused = false;
         try
@@ -241,7 +245,7 @@ internal sealed partial class CacheWatch : IDisposable
                 lines = reader.ReadToEnd().Split('\n');
             }
             if (!Ended(lines, start, log, now)) return TurnEnd.UnderWay;
-            if (pauseAtOnce && Paused(lines)) { paused = true; wait = TimeSpan.Zero; }
+            if (pausable && Paused(lines)) { paused = true; if (wait != TimeSpan.Zero) wait = PauseWait; }
             if (wait == TimeSpan.MaxValue || now.UtcDateTime - File.GetLastWriteTimeUtc(log) < wait) return TurnEnd.Waiting;
             return holdForWork && WorkUnderWay(lines) ? TurnEnd.HeldForWork : TurnEnd.Due;
         }

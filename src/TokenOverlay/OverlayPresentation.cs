@@ -62,13 +62,21 @@ internal sealed record OverlayPresentation(
     // Top to bottom: OpenAI, then OpenCode Go (user, 2026-11-12: "위에서부터 openai opencode 엔트로픽"; Anthropic then
     // went to the reset line instead of a table). The
     // first table's title is the panel's; each one under another gets a title row of its own.
-    // OpenCode Go's three windows, a table of the same columns (OpenCodeGo.cs). Null without the key.
-    public FreeTokenTable? GoTable { get; init; }
-    public int GoRows => GoTable is { } go ? go.Rows.Count + 1 : 0;
-    public bool GoTitle => GoTable is not null && History.Count > 0;
-    public int GoTop => TurnRows + (GoTitle ? 1 : 0);
-    public int TableRows => GoTop + GoRows;
-    public bool HasTable => GoTable is not null || History.Count > 0;
+    // OpenCode Go's three windows, a table of the same columns per account (OpenCodeGo.cs), top first: the second
+    // account above the first (user, 2026-11-14: "새 api 추가할테니까 ctrl 표 위에다가 그 계정도 붙여줘"), the
+    // third above the second (2026-11-15). Empty without a key.
+    public IReadOnlyList<FreeTokenTable> GoTables { get; init; } = [];
+    // Go table i gets a title row of its own when a table is above it; the first one under nothing takes the panel's.
+    public bool GoTitle(int index) => index > 0 || History.Count > 0;
+    // The row of Go table i's column header.
+    public int GoTop(int index)
+    {
+        var row = TurnRows;
+        for (var i = 0; i < index; i++) row += (GoTitle(i) ? 1 : 0) + GoTables[i].Rows.Count + 1;
+        return row + (GoTitle(index) ? 1 : 0);
+    }
+    public int TableRows => GoTables.Count == 0 ? TurnRows : GoTop(GoTables.Count - 1) + GoTables[^1].Rows.Count + 1;
+    public bool HasTable => GoTables.Count > 0 || History.Count > 0;
     // The Anthropic Console's dollars left ("$188.03"), drawn as "API: $188.03" in front of the week's devices
     // (AnthropicCredits.cs).
     // Null without the login cookie.
@@ -76,7 +84,7 @@ internal sealed record OverlayPresentation(
     // The tables shown, top first, with their column headers.
     public IReadOnlyList<(IReadOnlyList<string> Header, IReadOnlyList<HistoryRow> Rows)> Tables =>
         [.. History.Count > 0 ? [(HistoryHeader, History)] : Array.Empty<(IReadOnlyList<string>, IReadOnlyList<HistoryRow>)>(),
-         .. GoTable is { } g ? [(g.Header ?? HistoryHeader, g.Rows)] : Array.Empty<(IReadOnlyList<string>, IReadOnlyList<HistoryRow>)>()];
+         .. GoTables.Select(g => (g.Header ?? HistoryHeader, g.Rows))];
     // A weekly line takes a second row for its bar, the reset line one for its time line.
     // Without turns (no chat known yet) there is no column header: the list holds only the footer.
     public int HistoryPanelRows => SessionsTopRow + SessionRows

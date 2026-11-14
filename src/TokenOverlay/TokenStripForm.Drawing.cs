@@ -457,7 +457,7 @@ internal sealed partial class TokenStripForm
             // No chat known yet: only the footer (the weekly line), under its own header.
             var sessions = _presentation.Sessions;
             var title = _presentation.History.Count > 0 ? _presentation.HistoryTitle
-                : _presentation.GoTable is { } goTable ? goTable.Title
+                : _presentation.GoTables is [var goTable, ..] ? goTable.Title
                 : sessions is not null ? "Claude 캐시 세션" : "주간 사용량";
             TextRenderer.DrawText(graphics, HistoryPinned ? title + " · 고정됨" : title, headerFont,
                 new Rectangle(content.Left, content.Top, content.Width, headerHeight), _palette.Value, TextFlags);
@@ -517,6 +517,15 @@ internal sealed partial class TokenStripForm
                 for (var index = 0; index < rows.Count; index++)
                 {
                     var item = rows[index];
+                    // A window whose limit is reached: the whole row on red (user, 2026-11-14: "막힘있으면 그 줄은
+                    // 빨간배경으로 바뀌게 해놔").
+                    if (item.Cache == BlockedState)
+                    {
+                        var light = _palette.Background.GetBrightness() > 0.5f;
+                        using var red = new SolidBrush(light ? Color.FromArgb(70, LoginRedLight) : Color.FromArgb(120, 200, 40, 40));
+                        graphics.FillRectangle(red, content.Left, historyTop + ((top + index + 1) * layout.ExpandedRowHeight),
+                            content.Width, layout.ExpandedRowHeight);
+                    }
                     Row(top + index + 1, item.When, item.Tokens, item.Seconds, item.Rate, item.Model, item.Cache, item.ModelName, valueFont, false);
                 }
                 foreach (var x in lines)
@@ -538,10 +547,12 @@ internal sealed partial class TokenStripForm
             // OpenCode Go on top under the panel's title, then OpenAI under a title row of its own.
             // OpenAI on top under the panel's title, then OpenCode Go under a title row of its own when OpenAI is above it.
             if (history.Count > 0) Table(0, _presentation.HistoryHeader, history);
-            if (_presentation.GoTable is { } go)
+            // Each OpenCode Go account's table, the second account on top; each one under another under its own title.
+            for (var index = 0; index < _presentation.GoTables.Count; index++)
             {
-                if (_presentation.GoTitle) Section(_presentation.GoTop - 1, go.Title);
-                Table(_presentation.GoTop, go.Header ?? _presentation.HistoryHeader, go.Rows);
+                var go = _presentation.GoTables[index];
+                if (_presentation.GoTitle(index)) Section(_presentation.GoTop(index) - 1, go.Title);
+                Table(_presentation.GoTop(index), go.Header ?? _presentation.HistoryHeader, go.Rows);
             }
             // Under the tables the sessions are their own section.
             if (_presentation.SessionTitle) Section(_presentation.TableRows, "Claude 캐시 세션");
