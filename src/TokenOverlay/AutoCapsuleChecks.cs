@@ -224,9 +224,9 @@ internal static class AutoCapsuleChecks
             var line=on.TopLineBounds.Height;
             IntRect Down(IntRect r)=>r with {Y=r.Y+line};
             Check(off.TopLineBounds.IsEmpty && line>0 && on.TopLineBounds==new IntRect(on.CapsuleBounds.X,off.RingBounds.Y,on.CapsuleBounds.Width,line)
-                && on.TopLineBounds.Bottom==on.RingModuleBounds.Top && line<on.RingBounds.Height/2
+                && on.TopLineBounds.Bottom==on.RingModuleBounds.Top && line<on.RingBounds.Height
                 && TokenStripForm.CapsuleWithRow(on).Top==on.TopLineBounds.Top,
-                $"CPU line: a thin line over the meters' row, under half the ring's height, inside the one rectangle ({dpi} DPI; {on.TopLineBounds})");
+                $"CPU line: two thin lines over the meters' row (2026-11-15), under the ring's height, inside the one rectangle ({dpi} DPI; {on.TopLineBounds})");
             Check(!off.FullTopRow && off.CpuBarBounds.IsEmpty && on.FullTopRow
                 && on.RingModuleBounds==new IntRect(on.CapsuleBounds.X,on.RingBounds.Y,on.CapsuleBounds.Width,on.RingBounds.Height)
                 && on.RingBounds==Down(off.RingBounds) && on.RingNoteBounds==Down(off.RingNoteBounds) && on.CapsuleBounds==Down(off.CapsuleBounds)
@@ -275,13 +275,34 @@ internal static class AutoCapsuleChecks
             // The program and its share first, so a long session name is what "…" cuts.
             // No "CPU 1위" ahead of it: the user knows what the line is (2026-11-09).
             // Python by its logo, from a python.exe on this PC's PATH (2026-11-10); "python-name" is the same line without it.
-            foreach(var (name,text,logo) in new[]{("claude","python 10% · 토큰 오버레이",(string?)null),("app","KakaoTalk 3%",null),
-                ("long","dotnet 37% · B2 그룹 묶기·기본 타깃 리버싱 · 새 F 계산 조건",null),("waiting",(string?)null,null),
-                ("python","python 45% · C 판정 — 실측 기준·판정 도구",PythonOnPath()),("python-name","python 45% · C 판정 — 실측 기준·판정 도구",null)})
+            // Who started it (2026-11-15): the app's own icon from a program running on this PC, ahead of the program;
+            // "-word" pictures are the same lines where the app gives no icon.
+            foreach(var (name,text,logo,app) in new[]{("claude","Claude python 10% · 토큰 오버레이",(string?)null,(string?)null),("app","KakaoTalk 3%",null,null),
+                ("long","Claude dotnet 37% · B2 그룹 묶기·기본 타깃 리버싱 · 새 F 계산 조건",null,CpuTop.LogoFile("Claude")),("waiting",(string?)null,null,null),
+                ("python","Claude python 45% · C 판정 — 실측 기준·판정 도구",PythonOnPath(),CpuTop.LogoFile("Claude")),
+                ("python-name","Claude python 45% · C 판정 — 실측 기준·판정 도구",null,null),
+                ("gpt","GPT python 30%",PythonOnPath(),CpuTop.LogoFile("GPT")),("opencode","OpenCode node 12%",null,CpuTop.LogoFile("OpenCode")),
+                ("deepseek","DeepSeek python 20%",PythonOnPath(),CpuTop.LogoFile("DeepSeek")),("antigravity","Antigravity 8% · 앱",null,CpuTop.LogoFile("Antigravity")),
+                ("gpt-word","GPT python 30%",PythonOnPath(),null),
+                ("gpt-thread","GPT python 44% · 긴 문서 요약",PythonOnPath(),CpuTop.LogoFile("GPT"))})
             {
                 form.ApplyTheme(OverlayThemePalette.For(kind));
                 form.SetMeters(1.0,0.72,Gpu(30,35));
-                form.SetTopLine(text,logo);
+                form.SetTopLine(text,logo,app);
+                using var shot=Shot(form);
+                shot.Save(Path.Combine(directory,$"topline-{(kind==OverlayThemeKind.Light?"light":"dark")}-{name}.png"));
+            }
+            // Two lines (2026-11-15): the busiest group, then the next, each with its own icons.
+            foreach(var kind in new[]{OverlayThemeKind.Light,OverlayThemeKind.Dark})
+            foreach(var (name,rows) in new (string,CpuTop.TopRow[])[]{
+                ("two",[new("GPT python 44% · 긴 문서 요약",PythonOnPath(),CpuTop.LogoFile("GPT")),new("Claude python 6% · 토큰 오버레이",PythonOnPath(),CpuTop.LogoFile("Claude"))]),
+                ("two-app",[new("Claude python 45% · C 판정 — 실측 기준·판정 도구",PythonOnPath(),CpuTop.LogoFile("Claude")),new("KakaoTalk 3%",null,null)]),
+                ("one",[new("Claude python 45% · C 판정 — 실측 기준·판정 도구",PythonOnPath(),CpuTop.LogoFile("Claude"))]),
+                ("app-itself",[new("Claude 5% · 앱",null,CpuTop.LogoFile("Claude")),new("Claude python 1% · 토큰 오버레이",PythonOnPath(),CpuTop.LogoFile("Claude"))])})
+            {
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.SetMeters(1.0,0.72,Gpu(30,35));
+                form.SetTopLines(rows);
                 using var shot=Shot(form);
                 shot.Save(Path.Combine(directory,$"topline-{(kind==OverlayThemeKind.Light?"light":"dark")}-{name}.png"));
             }
@@ -300,6 +321,15 @@ internal static class AutoCapsuleChecks
                 bool Same(Bitmap a,Bitmap b){ for(var y=area.Top;y<area.Bottom;y++) for(var x=area.Left;x<area.Right;x++) if(a.GetPixel(x,y)!=b.GetPixel(x,y)) return false; return true; }
                 Check(!Same(named,logoed),"CPU line: python's own icon replaces its name");
                 Check(Same(named,wrong),"CPU line: a file without an icon leaves the name");
+                if(CpuTop.LogoFile("Claude") is not { } claudeFile) Console.WriteLine("SKIP CPU line app icon: no claude.exe running");
+                else
+                {
+                    Bitmap Started(string? app){ form.SetTopLine("Claude python 45% · 세션",python,app); return Shot(form); }
+                    using var word=Started(null);
+                    using var icon=Started(claudeFile);
+                    using var none=Started(Path.Combine(directory,"no-such-file.exe"));
+                    Check(!Same(word,icon) && Same(word,none),"CPU line: the starting app's own icon replaces its word; without one the word stays");
+                }
                 form.SetTopLine(null);
             }
         }
@@ -333,16 +363,36 @@ internal static class AutoCapsuleChecks
             var reused=new[]{P(100,4,"explorer.exe",0),P(500,100,"game.exe",5,created:50),P(600,500,"helper.exe",70,created:20)};
             // Seen 2026-11-09: python workers under `timeout`, whose shell had exited.
             var orphaned=new[]{P(700,8456,"timeout.exe",0),P(701,700,"timeout.exe",0),P(702,701,"python.exe",2),P(703,702,"python.exe",30),P(704,702,"python.exe",31)};
-            Check(CpuTop.Line(Tree(50,40,20),1000,Title)=="python 5% · 토큰 오버레이"
+            Check(CpuTop.Line(Tree(50,40,20),1000,Title)=="Claude python 5% · 토큰 오버레이"
                 && CpuTop.Line(Tree(20,40,10),1000,Title)=="chrome 4%"
-                && CpuTop.Line(Tree(20,40,60),1000,Title)=="node 6% · "+CpuTop.UnknownSession
-                && CpuTop.Line(Tree(50,40,20),1000,_=>null)=="python 5% · 1a2b3c4d"
+                && CpuTop.Line(Tree(20,40,60),1000,Title)=="Claude node 6% · "+CpuTop.UnknownSession
+                && CpuTop.Line(Tree(50,40,20),1000,_=>null)=="Claude python 5% · 1a2b3c4d"
                 && CpuTop.Line(reused,1000,Title)=="helper 7%" && CpuTop.Line(orphaned,1000,Title)=="python 6%"
                 && CpuTop.Line(Tree(0,0,0).Select(p=>p with {Used=-1}).ToArray(),1000,Title) is null && CpuTop.Line(Tree(50,40,20),0,Title) is null
                 && CpuTop.SessionOf($"\"C:\\x\\claude.exe\" --output-format stream-json --resume {sid} --verbose")==sid
                 && CpuTop.SessionOf("claude.exe --output-format stream-json --await-claim")==""
                 && CpuTop.SessionOf("claude.exe --type=renderer --user-data-dir=x") is null,
                 "CPU line: the heaviest program group, a session's own processes named by the session (or 이름 모름), a reused pid not taken for a parent");
+            // 2026-11-15, the user: who started the busiest work, by its icon ("클로드 로고 + 파이썬 로고"), for GPT,
+            // OpenCode, DeepSeek, Antigravity and the like too. The nearest app wins (Claude's session handing work to
+            // codex: GPT, the session still named); an app's own processes show it alone; nothing for work of no app.
+            {
+                CpuTop.Proc[] Under(params (int Pid,int Parent,string Exe,long Used)[] chain)=>
+                    [P(100,4,"explorer.exe",1),..chain.Select(c=>P(c.Pid,c.Parent,c.Exe,c.Used))];
+                var gpt=Under((800,100,"ChatGPT.exe",2),(810,800,"codex.exe",1),(820,810,"cmd.exe",0),(830,820,"python.exe",90));
+                var gptHelper=Under((800,100,"ChatGPT.exe",2),(810,800,"codex-code-mode-host.exe",70));
+                var openCode=Under((800,100,"OpenCode.exe",2),(810,800,"opencode-cli.exe",3),(820,810,"node.exe",121));
+                var deepSeek=Under((800,100,"DeepSeek Harness.exe",2),(810,800,"python.exe",200));
+                var antigravity=Under((800,100,"Antigravity.exe",30),(810,800,"Antigravity.exe",50),(820,800,"language_server_windows_x64.exe",1));
+                var app=Under((800,100,"claude.exe",30));
+                var handed=Tree(5,4,2).Concat([P(360,310,"codex.exe",1),P(370,360,"python.exe",80)]).ToArray();
+                var lines=new[]{CpuTop.Line(gpt,1000,Title),CpuTop.Line(gptHelper,1000,Title),CpuTop.Line(openCode,1000,Title),CpuTop.Line(deepSeek,1000,Title),
+                    CpuTop.Line(antigravity,1000,Title),CpuTop.Line(app,1000,Title),CpuTop.Line(handed,1000,Title)};
+                Check(lines.SequenceEqual(new[]{"GPT python 9%","GPT 7% · 앱","OpenCode node 13%","DeepSeek python 20%","Antigravity 8% · 앱","Claude 3% · 앱","GPT python 9% · 토큰 오버레이"})
+                    && CpuTop.LauncherOf("CODEX.EXE")?.Word=="GPT" && CpuTop.LauncherOf("opencode-pty.exe")?.Word=="OpenCode" && CpuTop.LauncherOf("python.exe") is null
+                    && CpuTop.LauncherWord("Claude") is not null && CpuTop.LauncherWord("python") is null,
+                    $"CPU line: the app that started the work goes first (Claude, GPT, OpenCode, DeepSeek, Antigravity; the nearest one), alone for its own processes ({string.Join(" | ",lines)})");
+            }
             var reports=Directory.CreateTempSubdirectory("cputop-");
             try
             {
@@ -360,13 +410,35 @@ internal static class AutoCapsuleChecks
             var heads=CpuTop.Orphans(orphaned);
             var named=orphaned.Select(p=>p.Pid==700?p with {Session=sid}:p).ToArray();
             Check(heads.Count==1 && heads[700]==704 && CpuTop.Orphans(Tree(50,40,20)).Count==0
-                && CpuTop.Line(named,1000,Title)=="python 6% · 토큰 오버레이"
+                && CpuTop.Line(named,1000,Title)=="Claude python 6% · 토큰 오버레이"
                 && CpuTop.FindSession(Block("PATH=C:\\x","CLAUDE_CODE_SESSION_ID="+sid,"OTHER=1"))==sid
                 && CpuTop.FindSession(Block("CLAUDE_CODE_SESSION_ID="+sid))==sid
                 && CpuTop.FindSession(Block("XCLAUDE_CODE_SESSION_ID="+sid))==null
                 && CpuTop.FindSession(Block("CLAUDE_CODE_SESSION_ID=not-an-id-at-all-but-36-chars-long!!"))==null
                 && CpuTop.FindSession(Block("PATH=C:\\x"))==null,
                 "CPU line: work whose shell has exited is named by the session id in its environment, that variable alone");
+            // 2026-11-15, the user: "세션이름은왜안뜨냐" for the Codex app's work; Codex's thread (CODEX_THREAD_ID) names it,
+            // only for work GPT started outside a Claude session, and only that one variable is read.
+            {
+                const string thread="00000000-0000-7000-8000-00000000c0de";
+                string? Thread(CpuTop.Proc p)=>p.Exe=="python.exe"?"코덱스 스레드":null;
+                var codex=new[]{P(100,4,"explorer.exe",1),P(800,100,"ChatGPT.exe",2),P(810,800,"codex.exe",1),P(820,810,"pwsh.exe",0),P(830,820,"python.exe",90)};
+                var seek=new[]{P(100,4,"explorer.exe",1),P(800,100,"DeepSeek Harness.exe",2),P(810,800,"python.exe",200)};
+                var handedOver=Tree(5,4,2).Concat([P(360,310,"codex.exe",1),P(370,360,"python.exe",80)]).ToArray();
+                var codexLines=new[]{CpuTop.Line(codex,1000,Title,out _,out _,Thread),CpuTop.Line(codex,1000,Title,out _,out _,_=>null),
+                    CpuTop.Line(seek,1000,Title,out _,out _,Thread),CpuTop.Line(handedOver,1000,Title,out _,out _,Thread)};
+                Check(codexLines.SequenceEqual(new[]{"GPT python 9% · 코덱스 스레드","GPT python 9%","DeepSeek python 20%","GPT python 9% · 토큰 오버레이"})
+                    && CpuTop.FindCodexThread(Block("PATH=C:\\x","CODEX_THREAD_ID="+thread,"OTHER=1"))==thread
+                    && CpuTop.FindCodexThread(Block("CLAUDE_CODE_SESSION_ID="+sid))==null
+                    && CpuTop.FindSession(Block("CODEX_THREAD_ID="+thread))==null,
+                    $"CPU line: Codex's work is named by its thread, GPT's alone, a Claude session's name first ({string.Join(" | ",codexLines)})");
+                // The busiest two groups (2026-11-15), the busiest first; one when only one used the processor.
+                var two=CpuTop.Lines(codex.Concat([P(900,100,"KakaoTalk.exe",30)]).ToArray(),1000,Title,2,Thread);
+                var alone=CpuTop.Lines([P(100,4,"explorer.exe",0),P(900,100,"KakaoTalk.exe",30)],1000,Title,2,Thread);
+                Check(two.Select(l=>l.Text).SequenceEqual(new[]{"GPT python 9% · 코덱스 스레드","KakaoTalk 3%"}) && two[0].Heaviest==830 && two[1].Launcher is null
+                    && alone.Select(l=>l.Text).SequenceEqual(new[]{"KakaoTalk 3%"}) && CpuTop.Lines(codex,0,Title).Count==0,
+                    $"CPU lines: the busiest group and the next, each with its own launcher ({string.Join(" | ",two.Select(l=>l.Text))})");
+            }
             System.Diagnostics.Process? Child(string? session)
             {
                 var start=new System.Diagnostics.ProcessStartInfo("cmd.exe","/c ping -n 6 127.0.0.1 >nul"){UseShellExecute=false,CreateNoWindow=true};

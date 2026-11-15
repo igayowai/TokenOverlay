@@ -928,35 +928,68 @@ internal sealed partial class TokenStripForm
         var left = layout.CpuBarBounds.IsEmpty ? area.Left + metrics.CapsuleRadius : layout.CpuBarBounds.Left;
         var text = Rectangle.FromLTRB(left, area.Top + margin * 3 / 2, area.Right - metrics.CapsuleRadius, area.Bottom - margin * 3 / 2);
         using var font = AutoCapsule.TopLineFont(layout.Dpi, layout.ScalePercent);
-        var line = _topLine ?? "CPU 재는 중…";
-        // A program shown by its logo (Python, the user's ask on 2026-11-10): its file's icon, as tall as the text, in
-        // place of its name. Without the icon the name stays.
-        var space = line.IndexOf(' ');
-        if (_topLogo is { } logo && space > 0 && CpuTop.HasLogo(line[..space]) && TopLogo(logo, font.Height) is { } image)
-        {
-            graphics.DrawImageUnscaled(image, text.Left, text.Top + (text.Height - image.Height) / 2);
-            text = Rectangle.FromLTRB(text.Left + image.Width + Math.Max(2, margin), text.Top, text.Right, text.Bottom);
-            line = line[(space + 1)..];
-        }
-        TextRenderer.DrawText(graphics, line, font, text, _palette.Label,
-            AutoCapsule.Flags | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        var gap = Math.Max(2, margin);
+        // Two lines (2026-11-15, the user: "줄 하나 늘려서 CPU 사용량 1등하고 2등"), the busiest first, each half the height.
+        var rows = _topRows.Count > 0 ? _topRows : [new CpuTop.TopRow("CPU 재는 중…", null, null)];
+        var height = text.Height / TopRowCount;
+        for (var i = 0; i < rows.Count && i < TopRowCount; i++)
+            DrawTopRow(graphics, text with { Y = text.Top + i * height, Height = height }, rows[i], font, gap,
+                ref _topLogoImages[i], ref _topLauncherImages[i]);
         using var divider = new Pen(Color.FromArgb(110, _palette.Label), Math.Max(1f, metrics.StrokeWidth));
         graphics.DrawLine(divider, area.Left + metrics.CapsuleRadius, area.Bottom, area.Right - metrics.CapsuleRadius, area.Bottom);
     }
 
-    // The logo from the program file's own icon at this size, read once per file and size; null when the file gives none.
-    private Bitmap? TopLogo(string path, int size)
+    // One CPU line: who started it, its program, its share and its session, cut with "…" when too long.
+    private void DrawTopRow(Graphics graphics, Rectangle text, CpuTop.TopRow row, Font font, int gap,
+        ref (string Path, int Size, Bitmap? Image)? logoImage, ref (string Path, int Size, Bitmap? Image)? launcherImage)
     {
-        if (_topLogoImage is { } kept && kept.Path == path && kept.Size == size) return kept.Image;
-        _topLogoImage?.Image?.Dispose();
+        var line = row.Text;
+        var space = line.IndexOf(' ');
+        // Who started it (2026-11-15): the app's own icon, whole, as tall as the text, in place of its word; the word
+        // when the app gives none.
+        if (space > 0 && CpuTop.LauncherWord(line[..space]) is not null)
+        {
+            var word = line[..space];
+            if (row.LauncherLogo is { } file && TopLogo(ref launcherImage, file, font.Height, whole: true) is { } app)
+            {
+                graphics.DrawImageUnscaled(app, text.Left, text.Top + (text.Height - app.Height) / 2);
+                text = Rectangle.FromLTRB(text.Left + app.Width + gap, text.Top, text.Right, text.Bottom);
+            }
+            else
+            {
+                TextRenderer.DrawText(graphics, word, font, text, _palette.Label, AutoCapsule.Flags | TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                var width = TextRenderer.MeasureText(graphics, word + " ", font, Size.Empty, AutoCapsule.Flags).Width;
+                text = Rectangle.FromLTRB(Math.Min(text.Right, text.Left + width), text.Top, text.Right, text.Bottom);
+            }
+            line = line[(space + 1)..];
+            space = line.IndexOf(' ');
+        }
+        // A program shown by its logo (Python, the user's ask on 2026-11-10): its file's icon, as tall as the text, in
+        // place of its name. Without the icon the name stays.
+        if (row.Logo is { } logo && space > 0 && CpuTop.HasLogo(line[..space]) && TopLogo(ref logoImage, logo, font.Height, whole: false) is { } image)
+        {
+            graphics.DrawImageUnscaled(image, text.Left, text.Top + (text.Height - image.Height) / 2);
+            text = Rectangle.FromLTRB(text.Left + image.Width + gap, text.Top, text.Right, text.Bottom);
+            line = line[(space + 1)..];
+        }
+        TextRenderer.DrawText(graphics, line, font, text, _palette.Label,
+            AutoCapsule.Flags | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+
+    // The logo from the program file's own icon at this size, read once per file and size; null when the file gives none.
+    // Whole: the icon as it is (an app's icon is its logo); else Python's logo cut out of it (LogoOnly).
+    private static Bitmap? TopLogo(ref (string Path, int Size, Bitmap? Image)? cache, string path, int size, bool whole)
+    {
+        if (cache is { } kept && kept.Path == path && kept.Size == size) return kept.Image;
+        cache?.Image?.Dispose();
         Bitmap? image = null;
         try
         {
             using var icon = Icon.ExtractIcon(path, 0, 256);
-            if (icon is not null) { using var large = icon.ToBitmap(); image = LogoOnly(large, size); }
+            if (icon is not null) { using var large = icon.ToBitmap(); image = whole ? Scaled(large, new Rectangle(0, 0, large.Width, large.Height), size) : LogoOnly(large, size); }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { }
-        _topLogoImage = (path, size, image);
+        cache = (path, size, image);
         return image;
     }
 
@@ -978,6 +1011,14 @@ internal sealed partial class TokenStripForm
             }
         var source = right < 0 ? icon : logo;
         var bounds = right < 0 ? new Rectangle(0, 0, icon.Width, icon.Height) : Rectangle.FromLTRB(left, top, right + 1, bottom + 1);
+        var scaled = Scaled(source, bounds, size);
+        logo.Dispose();
+        return scaled;
+    }
+
+    // That part of the image, fitted into a square of the size.
+    private static Bitmap Scaled(Bitmap source, Rectangle bounds, int size)
+    {
         var side = Math.Max(bounds.Width, bounds.Height);
         var scaled = new Bitmap(size, size);
         using (var g = Graphics.FromImage(scaled))
@@ -988,7 +1029,6 @@ internal sealed partial class TokenStripForm
             var h = size * bounds.Height / side;
             g.DrawImage(source, new Rectangle((size - w) / 2, (size - h) / 2, w, h), bounds, GraphicsUnit.Pixel);
         }
-        logo.Dispose();
         return scaled;
     }
 

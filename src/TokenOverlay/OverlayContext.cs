@@ -29,11 +29,18 @@ internal sealed partial class OverlayContext : ApplicationContext
     private string? _pendingVisibleTitle;
     private HostApp _pendingApp;
     private IReadOnlyList<ClaudePane> _pendingPanes = [];
-    // Split view: the main capsule follows the focused pane; these show the other panes' sessions (display only).
+    // Split view: the main capsule follows the focused pane; these show the other panes' sessions.
     private readonly List<TokenStripForm> _paneForms = new();
+    private readonly List<OverlayPresentation> _panePresentations = new();
     // Ctrl held with the pointer over the capsule lists the recent turns below it.
     private readonly System.Windows.Forms.Timer _historyTimer = new() { Interval = 80 };
     private bool _historyMode;
+    // The pane capsule whose list is open; null while the list is the main capsule's. Every capsule opens its own
+    // chat's list (user, 2026-11-15: the other panes' capsules took no Ctrl, so the list seemed to open only at the
+    // bottom right).
+    private TokenStripForm? _historyPane;
+    private TokenStripForm ListForm => _historyPane ?? _form;
+    private bool MainListOpen => _historyMode && _historyPane is null;
     // Pinned list: stays open without Ctrl and regardless of which app is in front, so any capture tool can take it.
     private DateTime? _historyPinnedUntil;
     private static readonly TimeSpan HistoryPinDuration = TimeSpan.FromSeconds(60);
@@ -112,6 +119,8 @@ internal sealed partial class OverlayContext : ApplicationContext
         _routeMonitor = new VisibleThreadRouteMonitor(sessionRoot);
         _monitor = new TokenLogMonitor(sessionRoot);
         _titles = new ThreadTitleReader(sessionRoot);
+        // The CPU line names Codex's work by its thread (2026-11-15); a reader of its own, for the line's timer thread.
+        _cpuTop.CodexTitleOf = new ThreadTitleReader(sessionRoot).Read;
         _codexWeekly = new CodexWeeklyMonitor(sessionRoot, _driveLink.Current, _accounts);
         _codexWeekly.Start();
         _openCodeGo.Start();
@@ -157,15 +166,7 @@ internal sealed partial class OverlayContext : ApplicationContext
         _form.PingClicked += HandlePingClicked;
         _form.KeepClicked += HandleKeepClicked;
         _form.CompactClicked += HandleCompactClicked;
-        // The week's login line: the same sign-in window as the tray menu's, at most one every 10 seconds.
-        var loginOpened = DateTime.MinValue;
-        _form.LoginClicked += (_, _) =>
-        {
-            if (DateTime.UtcNow - loginOpened < TimeSpan.FromSeconds(10)) return;
-            loginOpened = DateTime.UtcNow;
-            if (!ClaudeTokenRenewal.OpenLoginWindow())
-                NotifySaveFailure("Claude 앱에 포함된 Claude Code를 찾지 못했음. Claude 데스크톱 앱의 Code 탭을 한 번 연 뒤 다시 시도.");
-        };
+        _form.LoginClicked += HandleLoginClicked;
         _form.EditPreviewChanged += HandleEditPreviewChanged;
         _form.EditGestureCompleted += HandleEditGestureCompleted;
         _form.EditSaveRequested += (_, _) => SaveManualEditing();
@@ -331,33 +332,65 @@ internal sealed partial class OverlayContext : ApplicationContext
         {
             var form = new TokenStripForm();
             form.ApplyTheme(_form.CurrentThemePalette);
+            form.CapsuleClicked += HandleCapsuleClicked;
+            form.PingClicked += HandlePingClicked;
+            form.KeepClicked += HandleKeepClicked;
+            form.CompactClicked += HandleCompactClicked;
+            form.LoginClicked += HandleLoginClicked;
             _paneForms.Add(form);
+            _panePresentations.Add(_presentation);
         }
         for (var i = 0; i < _paneForms.Count; i++)
         {
             var form = _paneForms[i];
-            if (i >= others.Length) { form.Hide(); continue; }
+            if (i >= others.Length) { HidePane(form); continue; }
             var paneTarget = target with { HostWindow = others[i].Host(target.HostWindow) };
             Point? manualCenter = null;
             if (_settings.ManualPlacementEnabled)
             {
                 manualCenter = ManualAttachmentCoordinator.ResolveCenter(SnapshotFromSettings(), CreateAttachmentTargets(paneTarget));
-                if (manualCenter is null) { form.Hide(); continue; }
+                if (manualCenter is null) { HidePane(form); continue; }
             }
             var presentation = Present(others[i].Snapshot);
+            _panePresentations[i] = presentation;
             form.SetPresentation(presentation);
-            var layout = OverlayLayoutCalculator.Calculate(new OverlayLayoutRequest(
-                paneTarget.HostWindow, InnerAnchor(_settings.AnchorFor(paneTarget.App), others[i]), false, presentation.ExpandedRows.Count,
-                presentation.ShowContextProgress, manualCenter, _settings.OverlayScalePercent, presentation));
+            OverlayLayoutResult Layout(bool open) => OverlayLayoutCalculator.Calculate(new OverlayLayoutRequest(
+                paneTarget.HostWindow, InnerAnchor(_settings.AnchorFor(paneTarget.App), others[i]), open,
+                open ? presentation.HistoryPanelRows : presentation.ExpandedRows.Count,
+                !open && presentation.ShowContextProgress, manualCenter, _settings.OverlayScalePercent, presentation, CompactPanel: open));
+            var layout = Layout(form == _historyPane);
+            if (form == _historyPane && layout.State != OverlayVisualState.Expanded)
+            {
+                // No room for the list: back to the plain capsule, as with the main one.
+                EndHistory(relayout: false);
+                layout = Layout(false);
+            }
             form.ApplyLayout(layout);
-            if (layout.State == OverlayVisualState.HiddenForSpace) form.Hide();
+            if (layout.State == OverlayVisualState.HiddenForSpace) HidePane(form);
             else if (!form.Visible && !form.HoverHidden) form.Show();
         }
     }
 
+    private void HidePane(TokenStripForm form)
+    {
+        if (form == _historyPane) EndHistory(relayout: false);
+        form.Hide();
+    }
+
     private void HidePaneForms()
     {
-        foreach (var form in _paneForms) form.Hide();
+        foreach (var form in _paneForms) HidePane(form);
+    }
+
+    // The week's login line: the same sign-in window as the tray menu's, at most one every 10 seconds.
+    private DateTime _loginOpened = DateTime.MinValue;
+
+    private void HandleLoginClicked(object? sender, EventArgs eventArgs)
+    {
+        if (DateTime.UtcNow - _loginOpened < TimeSpan.FromSeconds(10)) return;
+        _loginOpened = DateTime.UtcNow;
+        if (!ClaudeTokenRenewal.OpenLoginWindow())
+            NotifySaveFailure("Claude 앱에 포함된 Claude Code를 찾지 못했음. Claude 데스크톱 앱의 Code 탭을 한 번 연 뒤 다시 시도.");
     }
 
     private void RequestBackgroundPoll()
@@ -589,7 +622,7 @@ internal sealed partial class OverlayContext : ApplicationContext
             && credit == _presentation.CreditLeft) return;
         _presentation = WithFreeTokens(_presentation);
         _form.SetPresentation(_presentation);
-        if (_historyMode && _currentTarget is not null && _form.Visible) ApplyLayout(_currentTarget);
+        if (MainListOpen && _currentTarget is not null && _form.Visible) ApplyLayout(_currentTarget);
     }
 
     // Claude in front: the Ctrl list shows these sessions instead of the recent turns, as last read while it was open.
@@ -624,7 +657,7 @@ internal sealed partial class OverlayContext : ApplicationContext
         if (_presentation.App != HostApp.Claude) return true;
         _presentation = _presentation with { Sessions = SessionsFor(HostApp.Claude) };
         _form.SetPresentation(_presentation);
-        if (_historyMode && _currentTarget is not null && _form.Visible) ApplyLayout(_currentTarget);
+        if (MainListOpen && _currentTarget is not null && _form.Visible) ApplyLayout(_currentTarget);
         return true;
     }
 
@@ -674,8 +707,7 @@ internal sealed partial class OverlayContext : ApplicationContext
         if (!now && at - _cpuAt < 950) return;
         _cpuAt = at;
         _form.SetMeters(_cpu.Sample(), CpuUsage.Memory(), _gpu.Read());
-        var logo = _cpuTop.Logo;
-        _form.SetTopLine(_cpuTop.Text, logo);
+        _form.SetTopLines(_cpuTop.Rows);
     }
 
     private void RefreshPresentation()
@@ -715,7 +747,7 @@ internal sealed partial class OverlayContext : ApplicationContext
         }
 
         var layout = CalculateLayout(target, manualCenter);
-        if (_historyMode && layout.State != OverlayVisualState.Expanded)
+        if (MainListOpen && layout.State != OverlayVisualState.Expanded)
         {
             // No room for the list: fall back to the plain capsule.
             _historyMode = false;
@@ -792,13 +824,13 @@ internal sealed partial class OverlayContext : ApplicationContext
         Point? manualCenter = null) => new(
         hostWindow,
         anchor,
-        _interaction.State == OverlayVisualState.Expanded || _historyMode,
-        _historyMode ? _presentation.HistoryPanelRows : _presentation.ExpandedRows.Count,
-        !_historyMode && _presentation.ShowContextProgress,
+        _interaction.State == OverlayVisualState.Expanded || MainListOpen,
+        MainListOpen ? _presentation.HistoryPanelRows : _presentation.ExpandedRows.Count,
+        !MainListOpen && _presentation.ShowContextProgress,
         manualCenter,
         _settings.OverlayScalePercent,
         _presentation,
-        CompactPanel: _historyMode);
+        CompactPanel: MainListOpen);
 
     private void ApplyTheme(OverlayThemePalette palette)
     {

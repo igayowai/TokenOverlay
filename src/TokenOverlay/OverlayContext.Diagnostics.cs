@@ -48,7 +48,8 @@ internal sealed partial class OverlayContext
                 HasTarget = _currentTarget is not null, ManuallyHidden = _manuallyHidden, _form.HoverHidden,
                 Interaction = _interaction.State.ToString(), HistoryRows = _presentation.History.Count,
                 CursorOnCapsule = _form.CapsuleScreenBounds.Contains(Cursor.Position),
-                Capsule = _form.CapsuleScreenBounds, Cursor = Cursor.Position, PaneForms = _paneForms.Count(f => f.Visible) },
+                Capsule = _form.CapsuleScreenBounds, Cursor = Cursor.Position, PaneForms = _paneForms.Count(f => f.Visible),
+                PaneList = _historyPane is not null, PaneCapsules = _paneForms.Where(f => f.Visible).Select(f => f.CapsuleScreenBounds).ToArray() },
             Host = CodexWindowLocator.GetForegroundWindowProbe() };
         try { System.IO.File.WriteAllText(args[i+1], System.Text.Json.JsonSerializer.Serialize(value)); }
         catch (System.IO.IOException) { }

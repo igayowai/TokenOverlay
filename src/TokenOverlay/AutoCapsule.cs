@@ -102,13 +102,15 @@ internal static class AutoCapsule
     }
     // The share inside a meter's bar.
     public static Font MeterFont(uint dpi, int scale) => PixelFont("Segoe UI Semibold", 11, dpi, scale);
-    // The CPU line over the meters: smaller than the labels, one line, with a little room under it for the divider.
+    // The CPU lines over the meters: two lines of small text, with a little room under them for the divider.
     // 10 points, as the labels: 8 and then 9 were asked bigger on 2026-11-09.
     public static Font TopLineFont(uint dpi, int scale) => PixelFont("Segoe UI", 10, dpi, scale);
+    // Two lines since 2026-11-15 (the busiest group and the next, the user's ask).
     internal static int TopLineHeight(uint dpi, int scale)
     {
         using var font = TopLineFont(dpi, scale);
-        return TextRenderer.MeasureText("CPU 1위 가Ag", font, Size.Empty, Flags).Height + 3 * Math.Max(2, RingSize(dpi, scale).Margin);
+        return TokenStripForm.TopRowCount * TextRenderer.MeasureText("CPU 1위 가Ag", font, Size.Empty, Flags).Height
+            + 3 * Math.Max(2, RingSize(dpi, scale).Margin);
     }
     // The width the ring's lines take in the ring module: the widest line with a margin each side, or nothing.
     internal static int RingNoteWidth(uint dpi, int scale, string? note)

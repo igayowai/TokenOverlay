@@ -531,17 +531,21 @@ internal sealed partial class TokenStripForm : Form
     internal static Rectangle CapsuleWithRow(OverlayLayoutResult layout) => Rectangle.FromLTRB(layout.CapsuleBounds.Left,
         layout.TopLineBounds.IsEmpty ? layout.RingModuleBounds.Top : layout.TopLineBounds.Top, layout.CapsuleBounds.Right, layout.CapsuleBounds.Bottom);
 
-    // The CPU line's text (null: nothing known yet). Redrawn only when it changes.
-    private string? _topLine;
-    internal string? TopLine => _topLine;
-    // The program file whose icon replaces the line's first word (CpuTop.Logo), and that icon at the size last drawn.
-    private string? _topLogo;
-    private (string Path, int Size, Bitmap? Image)? _topLogoImage;
-    public void SetTopLine(string? text, string? logo = null)
+    // The CPU lines, the busiest group first (none: nothing known yet), each with the program files whose icons stand
+    // for its program and its launcher (CpuTop.TopRow). Redrawn only when they change.
+    internal const int TopRowCount = 2;
+    private IReadOnlyList<CpuTop.TopRow> _topRows = [];
+    internal string? TopLine => _topRows.Count > 0 ? _topRows[0].Text : null;
+    // Each row's icons at the size last drawn: Python's logo (cut from its icon) and the launcher's whole icon.
+    private readonly (string Path, int Size, Bitmap? Image)?[] _topLogoImages = new (string, int, Bitmap?)?[TopRowCount];
+    private readonly (string Path, int Size, Bitmap? Image)?[] _topLauncherImages = new (string, int, Bitmap?)?[TopRowCount];
+    public void SetTopLine(string? text, string? logo = null, string? launcherLogo = null) =>
+        SetTopLines(text is null ? [] : [new CpuTop.TopRow(text, logo, launcherLogo)]);
+    public void SetTopLines(IReadOnlyList<CpuTop.TopRow> rows)
     {
-        if (text == _topLine && logo == _topLogo) return;
-        _topLine = text;
-        _topLogo = logo;
+        rows = rows.Take(TopRowCount).ToArray();
+        if (rows.SequenceEqual(_topRows)) return;
+        _topRows = rows;
         if (CurrentLayout is { TopLineBounds.IsEmpty: false } l) Invalidate(l.TopLineBounds.ToRectangle());
     }
 
@@ -909,7 +913,7 @@ internal sealed partial class TokenStripForm : Form
         {
             CancelEditGesture();
             _hoverTimer.Dispose();
-            _topLogoImage?.Image?.Dispose();
+            foreach (var kept in _topLogoImages.Concat(_topLauncherImages)) kept?.Image?.Dispose();
             Region?.Dispose();
             Region = null;
         }

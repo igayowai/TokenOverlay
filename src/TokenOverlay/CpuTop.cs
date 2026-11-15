@@ -11,12 +11,15 @@ namespace TokenOverlay;
 // session, which its command line names (`--resume <id>`). A session the desktop app started fresh carries no id there
 // and reads "이름 모름" until its mod names its process. Work left running after the shell that started it exited has
 // no parent leading to a session: its head's environment names the session (CLAUDE_CODE_SESSION_ID, the user's choice
-// on 2026-11-10). Read without elevation, from the user's own processes; a command line or an environment is searched
-// for the session id alone and dropped.
+// on 2026-11-10). Work the Codex app or CLI started is named by its Codex thread, from CODEX_THREAD_ID in its
+// environment (the user's choice on 2026-11-15). Read without elevation, from the user's own processes; a command line
+// or an environment is searched for that one id alone and dropped.
 internal sealed partial class CpuTop : IDisposable
 {
     internal static readonly TimeSpan Every = TimeSpan.FromSeconds(2);
     internal const string UnknownSession = "이름 모름";
+    // In place of a session's name when the app that started nothing else is the busy one (the user's choice, 2026-11-15).
+    internal const string AppItself = "앱";
 
     // A process as one reading saw it. Used: processor time since the reading before (100 ns), -1 when not known.
     // Session: null for a process that is not a Claude Code session, "" for one without an id, else its id.
@@ -28,14 +31,61 @@ internal sealed partial class CpuTop : IDisposable
         "explorer.exe", "services.exe", "svchost.exe", "wininit.exe", "winlogon.exe", "smss.exe", "csrss.exe", "System", "[System Process]", "userinit.exe",
     };
 
-    // The line for one reading: the heaviest group's program (for a session, its heaviest process) and its share of the
-    // whole processor, then the session's name. Null when nothing used the processor.
-    internal static string? Line(IReadOnlyList<Proc> procs, long capacity, Func<string, string?> titleOf) => Line(procs, capacity, titleOf, out _);
-
-    internal static string? Line(IReadOnlyList<Proc> procs, long capacity, Func<string, string?> titleOf, out int heaviest)
+    // Who started the work (the user's ask, 2026-11-15: "누가 시전한건지도 로고로", Claude, GPT, OpenCode, DeepSeek,
+    // Antigravity and the like): the nearest of these apps among the busiest process and its parents, shown by the
+    // app's own icon read from its program file on this PC (none is shipped), by its word when there is none. Word: the
+    // line's first word for it. Programs: its program files (Prefix: and any whose name starts so, its helpers).
+    // LogoPrograms: the files whose icon stands for it, in order (codex.exe has none; the Codex app's ChatGPT.exe has).
+    internal sealed record Launcher(string Word, string[] Programs, string? Prefix, string[] LogoPrograms)
     {
-        heaviest = 0;
-        if (capacity <= 0) return null;
+        public bool Matches(string exe) => Programs.Contains(exe, StringComparer.OrdinalIgnoreCase)
+            || Prefix is not null && exe.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static readonly Launcher[] Launchers =
+    [
+        new("Claude", ["claude.exe"], null, ["claude.exe"]),
+        new("GPT", ["ChatGPT.exe", "codex.exe"], "codex-", ["ChatGPT.exe"]),
+        new("OpenCode", ["OpenCode.exe", "opencode.exe"], "opencode-", ["OpenCode.exe", "opencode-cli.exe"]),
+        new("DeepSeek", ["DeepSeek Harness.exe"], null, ["DeepSeek Harness.exe"]),
+        new("Antigravity", ["Antigravity.exe", "agy.exe"], null, ["Antigravity.exe"]),
+        new("Gemini", ["Gemini.exe", "GeminiAppLauncher.exe"], null, ["Gemini.exe", "GeminiAppLauncher.exe"]),
+    ];
+
+    // One line as the form draws it: its text, and the program files whose icons stand for its program (Python) and for
+    // who started it, when there are such.
+    internal sealed record TopRow(string Text, string? Logo, string? LauncherLogo);
+
+    internal static Launcher? LauncherOf(string exe) => Launchers.FirstOrDefault(l => l.Matches(exe));
+    // The launcher whose word starts the line, if one does.
+    internal static Launcher? LauncherWord(string word) => Launchers.FirstOrDefault(l => l.Word == word);
+
+    // The line for one reading: who started the heaviest group's work (see Launcher), its program (for a session, its
+    // heaviest process; left out when it is the launcher's own) and its share of the whole processor, then the
+    // session's name. Null when nothing used the processor.
+    internal static string? Line(IReadOnlyList<Proc> procs, long capacity, Func<string, string?> titleOf) => Line(procs, capacity, titleOf, out _, out _);
+
+    // CodexThreadOf: for work the Codex app or CLI started (GPT) and no Claude session, the name of the Codex thread
+    // whose shell started the process (CODEX_THREAD_ID, the user's choice on 2026-11-15), or null.
+    internal static string? Line(IReadOnlyList<Proc> procs, long capacity, Func<string, string?> titleOf, out int heaviest, out Launcher? launcher,
+        Func<Proc, string?>? codexThreadOf = null)
+    {
+        var first = Lines(procs, capacity, titleOf, 1, codexThreadOf);
+        heaviest = first.Count > 0 ? first[0].Heaviest : 0;
+        launcher = first.Count > 0 ? first[0].Launcher : null;
+        return first.Count > 0 ? first[0].Text : null;
+    }
+
+    // One line of the reading: its text, the busiest process of its group and who started it.
+    internal readonly record struct Ranked(string Text, int Heaviest, Launcher? Launcher);
+
+    // The lines of the busiest groups, the busiest first, at most Count of them (two since 2026-11-15, the user: "CPU
+    // 사용량 1등하고 2등 이렇게 둘다 표시"). Empty when nothing used the processor.
+    internal static List<Ranked> Lines(IReadOnlyList<Proc> procs, long capacity, Func<string, string?> titleOf, int count = 2,
+        Func<Proc, string?>? codexThreadOf = null)
+    {
+        var lines = new List<Ranked>();
+        if (capacity <= 0) return lines;
         var byPid = new Dictionary<int, Proc>();
         foreach (var p in procs) byPid[p.Pid] = p;
         var groups = new Dictionary<string, (long Used, int Root, string? Session, Proc Heaviest)>();
@@ -46,16 +96,67 @@ internal sealed partial class CpuTop : IDisposable
             groups.TryGetValue(key, out var g);
             groups[key] = (g.Used + p.Used, root, session, g.Heaviest.Used >= p.Used && g.Heaviest.Exe is not null ? g.Heaviest : p);
         }
-        if (groups.Count == 0) return null;
-        var top = groups.Values.MaxBy(g => g.Used);
-        heaviest = top.Heaviest.Pid;
-        var share = $"{(int)Math.Round(100.0 * top.Used / capacity)}%";
-        // The heaviest process names the group too: a program whose launcher outlived its parent (`timeout` started from
-        // a shell that has exited, 2026-11-09) heads its group, and its name says nothing of what is busy.
-        if (top.Session is null) return $"{Name(top.Heaviest.Exe)} {share}";
-        var name = top.Session.Length == 0 ? UnknownSession : titleOf(top.Session) ?? top.Session[..Math.Min(8, top.Session.Length)];
-        return $"{Name(top.Heaviest.Exe)} {share} · {name}";
+        foreach (var top in groups.Values.OrderByDescending(g => g.Used).Take(count))
+        {
+            var share = $"{(int)Math.Round(100.0 * top.Used / capacity)}%";
+            // A session's work whose parents no longer lead to an app (its environment named the session) is Claude's.
+            var launcher = StartedBy(top.Heaviest, byPid) ?? (top.Session is null ? null : Launchers[0]);
+            // The heaviest process names the group too: a program whose launcher outlived its parent (`timeout` started
+            // from a shell that has exited, 2026-11-09) heads its group, and its name says nothing of what is busy.
+            var program = launcher is null ? Name(top.Heaviest.Exe)
+                : launcher.Matches(top.Heaviest.Exe) ? launcher.Word : $"{launcher.Word} {Name(top.Heaviest.Exe)}";
+            string text;
+            // An app busy with its own processes (the desktop app drawing its window, 2026-11-15): "· 앱", so a line
+            // without a session's name is not taken for a session whose name was not read.
+            if (top.Session is null && launcher is not null && launcher.Matches(top.Heaviest.Exe))
+                text = $"{program} {share} · {AppItself}";
+            else if (top.Session is null)
+                text = launcher == Launchers[1] && codexThreadOf?.Invoke(top.Heaviest) is { Length: > 0 } thread
+                    ? $"{program} {share} · {thread}" : $"{program} {share}";
+            else
+            {
+                var name = top.Session.Length == 0 ? UnknownSession : titleOf(top.Session) ?? top.Session[..Math.Min(8, top.Session.Length)];
+                text = $"{program} {share} · {name}";
+            }
+            lines.Add(new(text, top.Heaviest.Pid, launcher));
+        }
+        return lines;
     }
+
+    // The nearest launcher among the process and its parents, stopping where its group does (see GroupOf).
+    private static Launcher? StartedBy(Proc p, Dictionary<int, Proc> byPid)
+    {
+        var node = p;
+        for (var guard = 0; guard < 64; guard++)
+        {
+            if (LauncherOf(node.Exe) is { } found) return found;
+            if (!byPid.TryGetValue(node.Parent, out var parent) || parent.Pid is 0 or 4 || Roots.Contains(parent.Exe)
+                || node.Parent == node.Pid || parent.Created > node.Created && node.Created > 0)
+                return null;
+            node = parent;
+        }
+        return null;
+    }
+
+    // The program file whose icon stands for the launcher: of its logo programs running now, in order, the app's own
+    // first process (one whose parent is not the app too), else any.
+    internal static string? LogoFile(Launcher launcher, IReadOnlyList<Proc> procs)
+    {
+        var byPid = new Dictionary<int, Proc>();
+        foreach (var p in procs) byPid[p.Pid] = p;
+        foreach (var name in launcher.LogoPrograms)
+            foreach (var p in procs.Where(p => p.Exe.Equals(name, StringComparison.OrdinalIgnoreCase))
+                         .OrderBy(p => byPid.TryGetValue(p.Parent, out var parent) && launcher.Matches(parent.Exe) ? 1 : 0))
+            {
+                using var handle = OpenProcess(ProcessQueryLimitedInformation, false, p.Pid);
+                if (!handle.IsInvalid && ImagePath(handle) is { } path && File.Exists(path)) return path;
+            }
+        return null;
+    }
+
+    // The same from the processes running now (for the draft pictures).
+    internal static string? LogoFile(string word) =>
+        LauncherWord(word) is { } launcher ? LogoFile(launcher, Snapshot().Select(s => new Proc(s.Pid, s.Parent, s.Exe, 0, 0, null)).ToList()) : null;
 
     private static (string Key, int Root, string? Session) GroupOf(Proc p, Dictionary<int, Proc> byPid)
     {
@@ -132,6 +233,8 @@ internal sealed partial class CpuTop : IDisposable
         public readonly long[] Recent = new long[Window];
         // The session named by an orphan's environment: not read yet (null), none (""), or its id.
         public string? Environment;
+        // CODEX_THREAD_ID from its environment, for work Codex started: not read yet (null), none (""), or the id.
+        public string? CodexThread;
         // The program file, read for a program shown by its logo: not read yet (null), unknown (""), or its path.
         public string? Image;
     }
@@ -146,13 +249,16 @@ internal sealed partial class CpuTop : IDisposable
     private long _lastAt;
     private int _busy;
     private volatile string? _text;
-    private volatile string? _logo;
+    private volatile IReadOnlyList<TopRow> _rows = [];
+    // Each launcher's icon file once found, while it is there.
+    private readonly Dictionary<string, string> _logoFiles = new();
 
     public bool Enabled { get; set; }
     // The last line read; null before the second reading or when nothing used the processor.
     public string? Text => _text;
-    // The program file whose icon stands for the line's first word, when that program is shown by its logo.
-    public string? Logo => _logo;
+    // The lines last read, the busiest first (at most two), each with its program files whose icons stand for its
+    // launcher and its program; empty before the second reading or when nothing used the processor.
+    public IReadOnlyList<TopRow> Rows => _rows;
 
     public CpuTop(bool start = true)
     {
@@ -179,7 +285,7 @@ internal sealed partial class CpuTop : IDisposable
         _lastAt = 0;
         Array.Clear(_capacities);
         _text = null;
-        _logo = null;
+        _rows = [];
     }
 
     internal string? Sample()
@@ -228,12 +334,43 @@ internal sealed partial class CpuTop : IDisposable
         if (last == 0) return null;
         // Processor time the whole PC had over the same readings, in 100 ns.
         _capacities[_slot] = (long)((at - last) * 10_000_000.0 / Stopwatch.Frequency) * System.Environment.ProcessorCount;
-        var line = Line(procs, _capacities.Sum(), id => _index.TitleOf(id), out var heaviest);
-        // Written before the line: the form draws a logo only for a line whose first word has one.
-        _logo = line is not null && _tracked.TryGetValue(heaviest, out var busy) && HasLogo(Name(procs.Find(p => p.Pid == heaviest).Exe ?? ""))
-            ? (busy.Image ??= ImagePath(busy.Handle) ?? "") is { Length: > 0 } image ? image : null
-            : null;
-        return line;
+        var rows = new List<TopRow>();
+        foreach (var (text, heaviest, launcher) in Lines(procs, _capacities.Sum(), id => _index.TitleOf(id), 2, p => CodexThread(p, procs)))
+        {
+            string? launcherLogo = null;
+            if (launcher is not null && (!_logoFiles.TryGetValue(launcher.Word, out launcherLogo) || !File.Exists(launcherLogo)))
+            {
+                _logoFiles.Remove(launcher.Word);
+                if ((launcherLogo = LogoFile(launcher, procs)) is not null) _logoFiles[launcher.Word] = launcherLogo;
+            }
+            var logo = _tracked.TryGetValue(heaviest, out var busy) && HasLogo(Name(procs.Find(p => p.Pid == heaviest).Exe ?? ""))
+                ? (busy.Image ??= ImagePath(busy.Handle) ?? "") is { Length: > 0 } image ? image : null
+                : null;
+            rows.Add(new(text, logo, launcherLogo));
+        }
+        _rows = rows;
+        return rows.Count > 0 ? rows[0].Text : null;
+    }
+
+    // Codex thread id → its title (set by the overlay; a reader of its own, used on this class's timer only).
+    public Func<string, string?>? CodexTitleOf { get; set; }
+
+    // The Codex thread whose shell started the process: CODEX_THREAD_ID (Codex 0.95 on puts it in every shell command's
+    // environment) from the process, else from its parents up to the Codex program, each read once. Its title, else the
+    // id's start; null when none carries it.
+    private string? CodexThread(Proc busiest, List<Proc> procs)
+    {
+        var node = busiest;
+        for (var guard = 0; guard < 16 && LauncherOf(node.Exe) is null; guard++)
+        {
+            if (_tracked.TryGetValue(node.Pid, out var t)
+                && (t.CodexThread ??= FromEnvironment(node.Pid, CodexThreadName) ?? "") is { Length: > 0 } id)
+                return CodexTitleOf?.Invoke(id) is { Length: > 0 } title ? title : id[..8];
+            var parent = procs.FindIndex(p => p.Pid == node.Parent);
+            if (parent < 0 || node.Parent == node.Pid) break;
+            node = procs[parent];
+        }
+        return null;
     }
 
     // Process id → session id, from the mods' reports written in the last two minutes (read again every 30 seconds).
@@ -277,7 +414,11 @@ internal sealed partial class CpuTop : IDisposable
     // CLAUDE_CODE_SESSION_ID from a process's environment, which every program a Claude Code session starts inherits.
     // The block also holds other variables (a messaging token among them): it is searched as bytes for that one name,
     // never turned into text, and wiped; nothing of it is kept, written or sent. A 64-bit process of this user only.
-    internal static string? SessionFromEnvironment(int pid)
+    internal static string? SessionFromEnvironment(int pid) => FromEnvironment(pid, SessionName);
+
+    // The same search for any one variable whose value is an id (36 characters): the session's, or Codex's thread
+    // (CODEX_THREAD_ID, the user's choice on 2026-11-15, read only for work Codex started).
+    private static string? FromEnvironment(int pid, byte[] name)
     {
         if (!System.Environment.Is64BitProcess) return null;
         using var handle = OpenProcess(ProcessQueryLimitedInformation | ProcessVmRead, false, pid);
@@ -295,20 +436,24 @@ internal sealed partial class CpuTop : IDisposable
         try
         {
             if (!ReadProcessMemory(handle, environment, block, length, out var read) || read <= 0) return null;
-            return FindSession(block.AsSpan(0, (int)read));
+            return FindId(block.AsSpan(0, (int)read), name);
         }
         finally { Array.Clear(block); }
     }
 
     private static readonly byte[] SessionName = System.Text.Encoding.Unicode.GetBytes("CLAUDE_CODE_SESSION_ID=");
+    private static readonly byte[] CodexThreadName = System.Text.Encoding.Unicode.GetBytes("CODEX_THREAD_ID=");
 
     // The variable's value in a UTF-16 environment block ("NAME=value\0…\0\0"), when it is a session id.
-    internal static string? FindSession(ReadOnlySpan<byte> block)
+    internal static string? FindSession(ReadOnlySpan<byte> block) => FindId(block, SessionName);
+    internal static string? FindCodexThread(ReadOnlySpan<byte> block) => FindId(block, CodexThreadName);
+
+    private static string? FindId(ReadOnlySpan<byte> block, byte[] name)
     {
-        for (var at = 0; at + SessionName.Length + 72 <= block.Length; at += 2)
+        for (var at = 0; at + name.Length + 72 <= block.Length; at += 2)
         {
-            if ((at > 0 && (block[at - 1] != 0 || block[at - 2] != 0)) || !block[at..].StartsWith(SessionName)) continue;
-            var value = block.Slice(at + SessionName.Length, 72);
+            if ((at > 0 && (block[at - 1] != 0 || block[at - 2] != 0)) || !block[at..].StartsWith(name)) continue;
+            var value = block.Slice(at + name.Length, 72);
             Span<char> id = stackalloc char[36];
             for (var i = 0; i < 36; i++)
             {

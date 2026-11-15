@@ -10,7 +10,7 @@ internal sealed partial class OverlayContext
             if (_historyPinnedUntil is null)
             {
                 _historyPinnedUntil = DateTime.UtcNow + HistoryPinDuration;
-                _form.SetHistoryPinned(true);
+                ListForm.SetHistoryPinned(true);
             }
             else
             {
@@ -19,7 +19,8 @@ internal sealed partial class OverlayContext
             return;
         }
 
-        if (!_interaction.OnCapsuleMouseUp() || _currentTarget is null)
+        // A pane capsule's click only pins or releases its list; the details panel is the main capsule's.
+        if (sender != _form || !_interaction.OnCapsuleMouseUp() || _currentTarget is null)
         {
             return;
         }
@@ -87,28 +88,44 @@ internal sealed partial class OverlayContext
             }
             // A screen-capture tool taking over the foreground must not close what is being captured.
             if (ScreenCaptureTools.IsForeground()) return;
-            if (!control || !_form.Visible || _manualAttachment.IsEditing
-                || !Rectangle.Inflate(_form.Bounds, 6, 6).Contains(cursor))
+            var list = ListForm;
+            if (!control || !list.Visible || _manualAttachment.IsEditing
+                || !Rectangle.Inflate(list.Bounds, 6, 6).Contains(cursor))
             {
                 EndHistory(relayout: true);
             }
             return;
         }
 
-        if (control && _currentTarget is not null && !_manuallyHidden && !_manualAttachment.IsEditing
-            && (_form.Visible || _form.HoverHidden)
+        if (!control || _currentTarget is not { } target || _manuallyHidden || _manualAttachment.IsEditing) return;
+        if ((_form.Visible || _form.HoverHidden)
             && _interaction.State != OverlayVisualState.Expanded
-            && _form.CapsuleScreenBounds.Contains(cursor)
-            // Claude: whether the mod runs here and its sessions, read now (the list may fall back to the turns).
-            && (_presentation.App != HostApp.Claude || RefreshSessionRows(scan: true))
-            && FreeTokensRead()
-            && _presentation.HasHistoryPanel)
+            && _form.CapsuleScreenBounds.Contains(cursor))
         {
-            _historyMode = true;
-            _form.CancelHoverHide();
-            _form.SetShowHistory(true);
-            ApplyLayout(_currentTarget);
+            // Claude: whether the mod runs here and its sessions, read now (the list may fall back to the turns).
+            if ((_presentation.App != HostApp.Claude || RefreshSessionRows(scan: true))
+                && FreeTokensRead()
+                && _presentation.HasHistoryPanel)
+            {
+                _historyMode = true;
+                _form.CancelHoverHide();
+                _form.SetShowHistory(true);
+                ApplyLayout(target);
+            }
+            return;
         }
+
+        // A split view's other panes: the capsule under the pointer opens its own chat's list in place.
+        var pane = _paneForms.FindIndex(form => (form.Visible || form.HoverHidden) && form.CapsuleScreenBounds.Contains(cursor));
+        if (pane < 0 || pane >= _panePresentations.Count) return;
+        RefreshSessionRows(scan: true);
+        FreeTokensRead();
+        if (!_panePresentations[pane].HasHistoryPanel && SessionsFor(HostApp.Claude) is null) return;
+        _historyMode = true;
+        _historyPane = _paneForms[pane];
+        _historyPane.CancelHoverHide();
+        _historyPane.SetShowHistory(true);
+        UpdatePaneForms(target);
     }
 
     // The latest complimentary-token numbers into the list before it opens (always goes on).
@@ -121,12 +138,16 @@ internal sealed partial class OverlayContext
     private void EndHistory(bool relayout)
     {
         if (!_historyMode) return;
+        var list = ListForm;
         _historyMode = false;
+        _historyPane = null;
         _historyPinnedUntil = null;
-        _form.SetHistoryPinned(false);
-        _form.SetShowHistory(false);
-        _form.Invalidate();
-        if (relayout && _currentTarget is not null && _form.Visible) ApplyLayout(_currentTarget);
+        list.SetHistoryPinned(false);
+        list.SetShowHistory(false);
+        list.Invalidate();
+        if (!relayout || _currentTarget is null) return;
+        if (list != _form) UpdatePaneForms(_currentTarget);
+        else if (_form.Visible) ApplyLayout(_currentTarget);
     }
 
     private void CollapseAndHide()
