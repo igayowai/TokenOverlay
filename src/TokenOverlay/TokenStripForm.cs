@@ -857,8 +857,10 @@ internal sealed partial class TokenStripForm : Form
             return;
         }
 
+        // A list shown alone (no room beside the capsule) takes the capsule's click, which pins or releases it.
         if (CurrentLayout is not null
-            && CurrentLayout.CapsuleBounds.Contains(clientPoint.X, clientPoint.Y))
+            && (CurrentLayout.CapsuleBounds.Contains(clientPoint.X, clientPoint.Y)
+                || (CurrentLayout.CapsuleBounds.IsEmpty && ShowHistory && CurrentLayout.PanelBounds.Contains(clientPoint.X, clientPoint.Y))))
         {
             CapsuleClicked?.Invoke(this, EventArgs.Empty);
         }

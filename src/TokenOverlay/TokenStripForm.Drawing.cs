@@ -47,6 +47,8 @@ internal sealed partial class TokenStripForm
         using var dividerPen = new Pen(_palette.Divider, metrics.StrokeWidth);
         using var progressTrackBrush = new SolidBrush(_palette.ProgressTrack);
 
+        // A list with no room beside the capsule is shown alone, the capsule hidden under it.
+        if (!CurrentLayout.CapsuleBounds.IsEmpty)
         DrawCapsule(
             eventArgs.Graphics,
             labelFont,

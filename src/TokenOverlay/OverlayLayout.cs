@@ -131,7 +131,65 @@ internal static class OverlayLayoutCalculator
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.HostWindow);
+        var result = CalculateFitting(request);
+        // The Ctrl list with no room where it normally opens (2026-11-15, three OpenCode Go tables): find it a place
+        // instead of staying shut. Where it fits, nothing changes.
+        return request.RequestExpanded && request.CompactPanel && result.State == OverlayVisualState.Collapsed
+            ? AdaptiveList(request, result) ?? result
+            : result;
+    }
 
+    // Only when the list does not fit where it normally opens: (1) the other side of the capsule, (2) the list alone,
+    // the capsule hidden under it, as tall as the screen allows and over the capsule's spot so the pointer stays on it,
+    // (3) the list alone with its text a step smaller each time. Null when even the smallest list does not fit.
+    private static OverlayLayoutResult? AdaptiveList(OverlayLayoutRequest request, OverlayLayoutResult collapsed)
+    {
+        var work = request.HostWindow.WorkingArea;
+        if (work.IsEmpty || collapsed.CapsuleBounds.IsEmpty) return null;
+        var dpi = collapsed.Dpi == 0 ? 96u : collapsed.Dpi;
+        var scale = collapsed.ScalePercent;
+        var window = collapsed.WindowBounds;
+        var capsule = new IntRect(window.X + collapsed.CapsuleBounds.X, window.Y + collapsed.CapsuleBounds.Y,
+            collapsed.CapsuleBounds.Width, collapsed.CapsuleBounds.Height);
+        var gap = ScaleOverlayDip(CapsulePanelGapDip, dpi, scale);
+
+        // (1) The capsule stays; the list on the side with room, above first when the capsule sits low.
+        var width = Math.Max(PanelWidth(request, dpi, scale), capsule.Width);
+        var left = Math.Max(work.Left, capsule.Right - width);
+        if (left + width <= work.Right && left <= capsule.Left)
+        {
+            var low = capsule.Top - work.Top > work.Bottom - capsule.Bottom;
+            foreach (var direction in low ? new[] { ExpansionDirection.Up, ExpansionDirection.Down } : [ExpansionDirection.Down, ExpansionDirection.Up])
+            {
+                var room = direction == ExpansionDirection.Down ? work.Bottom - capsule.Bottom - gap : capsule.Top - gap - work.Top;
+                if (!TryGetPanelSize(request, dpi, scale, room, out var height, out var row)) continue;
+                var top = direction == ExpansionDirection.Down ? capsule.Bottom + gap : capsule.Top - gap - height;
+                var formTop = Math.Min(top, capsule.Top);
+                var bottom = Math.Max(top + height, capsule.Bottom);
+                return new OverlayLayoutResult(OverlayVisualState.Expanded, collapsed.CollapsedDisplay, direction, collapsed.Dpi,
+                    new IntRect(left, formTop, width, bottom - formTop),
+                    new IntRect(capsule.Left - left, capsule.Top - formTop, capsule.Width, capsule.Height),
+                    new IntRect(0, top - formTop, width, height), row, scale);
+            }
+        }
+
+        // (2) and (3) The list alone, at this scale and then smaller ones.
+        for (var step = scale; step >= ManualAttachmentRules.MinimumScalePercent; step--)
+        {
+            var alone = Math.Max(PanelWidth(request, dpi, step), capsule.Width);
+            if (alone > work.Width || !TryGetPanelSize(request, dpi, step, work.Height, out var height, out var row)) continue;
+            var x = Clamp(capsule.Right - alone, work.Left, work.Right - alone);
+            var low = capsule.Top - work.Top > work.Bottom - capsule.Bottom;
+            var y = Clamp(low ? capsule.Bottom - height : capsule.Top, work.Top, work.Bottom - height);
+            return new OverlayLayoutResult(OverlayVisualState.Expanded, collapsed.CollapsedDisplay,
+                low ? ExpansionDirection.Up : ExpansionDirection.Down, collapsed.Dpi,
+                new IntRect(x, y, alone, height), default, new IntRect(0, 0, alone, height), row, step);
+        }
+        return null;
+    }
+
+    private static OverlayLayoutResult CalculateFitting(OverlayLayoutRequest request)
+    {
         if (request.Presentation?.CompactMiddle is not null)
         {
             // Preserve all three statistics. Reduce scale only when the measured capsule will not fit.

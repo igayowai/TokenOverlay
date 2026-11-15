@@ -146,6 +146,68 @@ internal static class OpenAiFreeChecks
             form.DrawToBitmap(bitmap, new Rectangle(0, 0, form.Width, form.Height));
             bitmap.Save(Path.Combine(directory, $"{name}.png"));
         }
+
+        // A Ctrl list too tall for its usual place (user, 2026-11-15: three Go tables shut it on some windows). This PC's
+        // screen at 150%: 1920 by 1128 working pixels; the capsule at the window's bottom right, as over OpenCode.
+        var openCode = new TokenSnapshot("x", "x", 0, 0, 0, 0, 0, 0, 0, default) { App = HostApp.OpenCode, ThreadTitle = "긴 문서 요약",
+            Turn = new TurnStatistics("t", 5_054_123, 65_496, 4_870_000, 1269.1, "완료", false, null)
+                { ModelSeconds = 1266.8, ModelRequests = 35, PureSeconds = 978.6, Model = "gemini-4-argon" },
+            ContextFill = 201_428 / 1_048_576.0, RingNote = ContextUsage.Note("gemini-4-argon", 1_048_576) };
+        var three = TurnPresentation.Create(openCode) with { History = [],
+            HistoryFooter = "이번주 17(토)~ · PC 35% · 다른 곳 0% · 계정 35%\n초기화 11-14 (토) 20:00 · 2일 18시간 남음",
+            GoTables = [goThird, goSecond, goTable], CreditLeft = creditLeft };
+        CodexWindowInfo Window(IntRect window, IntRect work) =>
+            new(new IntPtr(1), window, window, null, work, 144, new WindowChromeMetrics(36, 24, 4, 4, 4));
+        OverlayLayoutResult Open(CodexWindowInfo host, bool open = true) => OverlayLayoutCalculator.Calculate(new(host, AnchorMode.InsideBottomRight,
+            open, open ? three.HistoryPanelRows : three.ExpandedRows.Count, !open && three.ShowContextProgress, null, 100, three, CompactPanel: open));
+        var screen = new IntRect(0, 0, 1920, 1128);
+        // Where the pointer was when Ctrl opened the list: the middle of the shut capsule.
+        Point Pointer(CodexWindowInfo host)
+        {
+            var shut = Open(host, open: false);
+            return new Point(shut.WindowBounds.X + shut.CapsuleBounds.X + shut.CapsuleBounds.Width / 2,
+                shut.WindowBounds.Y + shut.CapsuleBounds.Y + shut.CapsuleBounds.Height / 2);
+        }
+        bool Inside(OverlayLayoutResult r, IntRect work) => r.WindowBounds.Left >= work.Left && r.WindowBounds.Top >= work.Top
+            && r.WindowBounds.Right <= work.Right && r.WindowBounds.Bottom <= work.Bottom;
+        var cases = new[]
+        {
+            ("adaptive-maximized", Window(screen, screen), screen),
+            ("adaptive-top-half", Window(new IntRect(960, 0, 960, 564), screen), screen),
+            ("adaptive-top-small", Window(new IntRect(1200, 0, 720, 300), screen), screen),
+            ("adaptive-short-screen", Window(new IntRect(0, 0, 1920, 600), new IntRect(0, 0, 1920, 600)), new IntRect(0, 0, 1920, 600)),
+        };
+        var results = cases.Select(c => (c.Item1, Layout: Open(c.Item2), Pointer: Pointer(c.Item2), Work: c.Item3)).ToArray();
+        string Say(OverlayLayoutResult r) => $"{r.State} {r.ExpansionDirection} capsule {(r.CapsuleBounds.IsEmpty ? "hidden" : "shown")} scale {r.ScalePercent} window {r.WindowBounds}";
+        Check(results[0].Layout is { State: OverlayVisualState.Expanded, ExpansionDirection: ExpansionDirection.Up, ScalePercent: 100 }
+              && !results[0].Layout.CapsuleBounds.IsEmpty && results[0].Layout.PanelBounds.Bottom <= results[0].Layout.CapsuleBounds.Top,
+            "a maximized window opens the list above the capsule as before (" + Say(results[0].Layout) + ")");
+        Check(results[2].Layout is { State: OverlayVisualState.Expanded, ExpansionDirection: ExpansionDirection.Down, ScalePercent: 100 }
+              && !results[2].Layout.CapsuleBounds.IsEmpty && results[2].Layout.PanelBounds.Top >= results[2].Layout.CapsuleBounds.Bottom,
+            "no room above a small window at the top: the list opens below the capsule (" + Say(results[2].Layout) + ")");
+        Check(results[1].Layout is { State: OverlayVisualState.Expanded, ScalePercent: 100 } && results[1].Layout.CapsuleBounds.IsEmpty,
+            "no room above or below: the list alone at full size, the capsule hidden (" + Say(results[1].Layout) + ")");
+        Check(results[3].Layout is { State: OverlayVisualState.Expanded } && results[3].Layout.CapsuleBounds.IsEmpty
+              && results[3].Layout.ScalePercent is < 100 and >= ManualAttachmentRules.MinimumScalePercent,
+            "a screen lower than the list: the list alone with smaller text (" + Say(results[3].Layout) + ")");
+        Check(results.All(r => Inside(r.Layout, r.Work) && r.Layout.ContainsScreenPoint(r.Pointer)),
+            "every open list stays on the screen and under the pointer that opened it, so it does not shut at once ("
+            + string.Join(" | ", results.Select(r => $"{r.Item1} {r.Pointer}")) + ")");
+        var tiny = new IntRect(0, 0, 1920, 300);
+        Check(Open(Window(tiny, tiny)).State == OverlayVisualState.Collapsed,
+            "a screen too low even for the smallest list keeps the capsule shut, as before");
+        foreach (var (name, layout, _, _) in results.Skip(1))
+        {
+            using var form = new TokenStripForm();
+            _ = form.Handle;
+            form.SetPresentation(three);
+            form.ApplyTheme(OverlayThemePalette.For(OverlayThemeKind.Dark));
+            form.SetShowHistory(true);
+            form.ApplyLayout(layout);
+            using var bitmap = new Bitmap(form.Width, form.Height);
+            form.DrawToBitmap(bitmap, new Rectangle(0, 0, form.Width, form.Height));
+            bitmap.Save(Path.Combine(directory, $"{name}.png"));
+        }
         return new { passed = true, checks };
     }
 }

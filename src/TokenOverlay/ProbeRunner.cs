@@ -131,6 +131,11 @@ internal static partial class ProbeRunner
             WriteJson(args[1], DeepSeekChecks.Run(Path.GetDirectoryName(Path.GetFullPath(args[1]))!));
             return true;
         }
+        if (args.Count >= 2 && args[0] == "--opencode-tests")
+        {
+            WriteJson(args[1], OpenCodeChecks.Run(Path.GetDirectoryName(Path.GetFullPath(args[1]))!));
+            return true;
+        }
         if (args.Count >= 2 && args[0] == "--openai-free-tests")
         {
             PrepareWindowProbeDpiAwareness();

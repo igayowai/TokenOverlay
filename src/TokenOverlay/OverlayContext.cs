@@ -25,6 +25,7 @@ internal sealed partial class OverlayContext : ApplicationContext
     private readonly CacheWatch _cacheWatch = new();
     private readonly DriveShareLink _driveLink;
     private readonly ClaudeDesktopSource _claude;
+    private readonly OpenCodeSource _openCodeSource = new();
     private readonly DeepSeekRateSource _deepSeek = DeepSeekRateSource.ForThisPc();
     private string? _pendingVisibleTitle;
     private HostApp _pendingApp;
@@ -427,6 +428,20 @@ internal sealed partial class OverlayContext : ApplicationContext
                         VisibleTitle: _claude.VisibleTitle,
                         App: HostApp.Claude,
                         Panes: claude.Panes);
+                }
+
+                // OpenCode desktop: its chat's numbers from OpenCode's own database (OpenCodeSessions.cs).
+                if (foreground?.App == HostApp.OpenCode)
+                {
+                    var openCode = _openCodeSource.Poll(foreground);
+                    return (
+                        Snapshot: openCode.Snapshot,
+                        Version: openCode.SessionVersion,
+                        ThreadId: openCode.Route.ThreadId,
+                        RouteStatus: openCode.Route,
+                        VisibleTitle: _openCodeSource.VisibleTitle,
+                        App: HostApp.OpenCode,
+                        Panes: (IReadOnlyList<ClaudePane>)Array.Empty<ClaudePane>());
                 }
 
                 var routeStatus = _routeMonitor.Poll();

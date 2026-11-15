@@ -547,7 +547,7 @@ internal static class TurnPresentation
                 ? $"{Count(t.Output)} ÷ 요청 {t.ModelRequests}건 {OverlayPresentationBuilder.FormatDuration(t.ModelSeconds ?? 0)} · 도구 대기 제외 · 첫 응답 대기 포함"
                 : t?.ModelNote ?? ModelRate.Waiting)
         };
-        if (snapshot?.App is HostApp.Claude or HostApp.Codex)
+        if (snapshot?.App is HostApp.Claude or HostApp.Codex or HostApp.OpenCode)
         {
             rows.Add(Metric(DisplayField.Thread, "", "생성 (대기 제외)", t?.PureTokensPerSecond is double pureRate ? $"{pureRate:0.00} TPS" : "—"));
             rows.Add(Metric(DisplayField.Thread, "", "", t?.PureTokensPerSecond is double
@@ -561,7 +561,7 @@ internal static class TurnPresentation
             // their wait for the first piece; 생성: generating time only.
             SubLine = status is not null ? null
                 : t?.ModelTokensPerSecond is double shown ? $"모델 {shown:0.00} TPS" : "모델 —",
-            SubLine2 = status is not null || snapshot?.App is not (HostApp.Claude or HostApp.Codex) ? null
+            SubLine2 = status is not null || snapshot?.App is not (HostApp.Claude or HostApp.Codex or HostApp.OpenCode) ? null
                 : t?.PureTokensPerSecond is double pure ? $"생성 {pure:0.00} TPS" : "생성 —",
             SubLineLeft = status is null ? snapshot?.CacheNote : null,
             SubLineLeftAlert = snapshot?.CacheAlert == true,

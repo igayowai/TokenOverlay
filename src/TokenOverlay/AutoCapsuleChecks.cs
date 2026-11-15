@@ -606,6 +606,25 @@ internal static class AutoCapsuleChecks
             && OverlayPresentationBuilder.FormatTokenCount(125_000_000)=="1.3억" && OverlayPresentationBuilder.FormatTokenCount(4_800)=="4,800"
             && OverlayPresentationBuilder.FormatContextCount(109_000)=="109.0k",
             "tokens spent read in 만 below 1억 and in 억 with one decimal from there; a context's size stays in k and M");
+        // Draft: the OpenCode capsule (user, 2026-11-15), at a real OpenCode turn's numbers: 35 requests, 65,496 output
+        // tokens with reasoning over 1,269.1 s, 1,266.8 s of requests, 978.6 s generating; context 201,428 of 1,048,576.
+        foreach(var (name,kind) in new[]{("opencode-dark",OverlayThemeKind.Dark),("opencode-light",OverlayThemeKind.Light)})
+        {
+            var openCode=new TokenSnapshot("x","x",0,0,0,0,0,0,0,default) { App=HostApp.OpenCode, ThreadTitle="긴 문서 요약",
+                Turn=new TurnStatistics("t",5_054_123,65_496,4_870_000,1269.1,"완료",false,null)
+                    { ModelSeconds=1266.8, ModelRequests=35, PureSeconds=978.6, Model="gemini-4-argon" },
+                ContextFill=201_428/1_048_576.0, RingNote=ContextUsage.Note("gemini-4-argon",1_048_576) };
+            var p=TurnPresentation.Create(openCode);
+            Check(p is { SubLine: "모델 51.70 TPS", SubLine2: "생성 66.93 TPS" } && p.Secondary.Value=="51.61" && p.Primary.Value=="512만",
+                $"OpenCode draft {name}: TPS, 모델 and 생성 from one OpenCode turn");
+            using var form=new TokenStripForm();
+            form.SetPresentation(p);
+            form.ApplyTheme(OverlayThemePalette.For(kind));
+            form.ApplyLayout(OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:p)));
+            using var bitmap=new Bitmap(form.Width,form.Height);
+            form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
+            bitmap.Save(Path.Combine(directory,$"{name}.png"));
+        }
         // Draft: the capsule and the open list with 억, at this PC's measured turn sizes (p25, p50, p90 of 2,904 turns) and two large ones.
         foreach(var (name,kind) in new[]{("eok-dark",OverlayThemeKind.Dark),("eok-light",OverlayThemeKind.Light)})
         {
