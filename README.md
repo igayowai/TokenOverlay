@@ -26,7 +26,7 @@
 2. 받은 `TokenOverlay-win-Setup.exe`를 실행함
 3. 끝. Codex나 Claude 앱을 켜면 창 위에 캡슐이 붙음
 
-OpenCode·DeepSeek Harness 데스크톱 앱 위에도 캡슐이 뜸(오른쪽 아래). OpenCode는 턴마다 속도·모델 이름·컨텍스트까지 채워짐. DeepSeek Harness의 턴 통계는 아직 읽지 않음.
+OpenCode·DeepSeek Harness 데스크톱 앱 위에도 캡슐이 뜸(오른쪽 아래). 둘 다 턴마다 속도·모델 이름·컨텍스트까지 채워짐.
 
 > [!TIP]
 > **실행할 때 경고가 뜨면?** 개인이 만든 프로그램이라 처음 한 번 뜨는 정상 경고임.
