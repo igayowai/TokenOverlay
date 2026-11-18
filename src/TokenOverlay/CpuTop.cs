@@ -204,11 +204,20 @@ internal sealed partial class CpuTop : IDisposable
     private static string Name(string exe) => exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? exe[..^4] : exe;
 
     // A program the line shows by its logo, not its name (the user's ask, 2026-11-10): Python, whose logo its own
-    // python.exe carries. Its forms: python, pythonw, python3, python3.14.
-    internal static bool HasLogo(string program) => LogoName().IsMatch(program);
+    // python.exe carries. Its forms: python, pythonw, python3, python3.14. Since 2026-11-18 also the other languages'
+    // runtimes (the user: "자바라던가 이런 코딩이나 프로그래밍 프로그램들은 아이콘좀 여러개 미리 등록해놓자"), each by its
+    // own program file's icon, so nothing is bundled; one whose file carries no icon (Rust's cargo, Go) keeps its name.
+    internal static bool HasLogo(string program) => IsPython(program) || RuntimeName().IsMatch(program);
+
+    // Python's icon is cut to its logo (TokenStripForm.LogoOnly); the others are drawn whole.
+    internal static bool IsPython(string program) => LogoName().IsMatch(program);
 
     [System.Text.RegularExpressions.GeneratedRegex(@"^pythonw?(\d+(\.\d+)?)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
     private static partial System.Text.RegularExpressions.Regex LogoName();
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^(javaw?|node|dotnet|bun|deno|rubyw?|php|php-cgi|perl|julia|Rscript|lua|kotlin)$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex RuntimeName();
 
     // A Claude Code session's claude.exe (the desktop app's own claude.exe processes take no --output-format) and the
     // session it resumes.

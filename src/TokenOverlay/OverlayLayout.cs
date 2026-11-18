@@ -202,7 +202,8 @@ internal static class OverlayLayoutCalculator
             }
             return Hidden(request.HostWindow.Dpi, DirectionFor(request.AnchorMode), ManualAttachmentRules.MinimumScalePercent);
         }
-        return CalculateCore(request);
+        var core = CalculateCore(request);
+        return request.Presentation is { } status && !string.IsNullOrWhiteSpace(status.StatusText) ? WithRing(core, status) : core;
     }
 
     // Context ring: a module standing on the collapsed capsule above its right end ("TPS"), where the host
@@ -215,22 +216,54 @@ internal static class OverlayLayoutCalculator
         // A small gap between the ring and the row under it.
         var rise = diameter + Math.Max(2, metrics.MetricGap / 2);
         var capsule = result.CapsuleBounds;
-        var ring = presentation.ContextFill is null ? 0 : diameter;
+        var ring = presentation.ContextFill is null || !string.IsNullOrWhiteSpace(presentation.StatusText) ? 0 : diameter;
         // The ring's lines left of the ring, when the capsule is wide enough for both.
         var note = ring == 0 ? 0 : AutoCapsule.RingNoteWidth(result.Dpi, result.ScalePercent, presentation.RingNote);
         if (note + ring > capsule.Width) note = 0;
         // The meters at the left end (CPU, memory, page file); the last goes first when the row is too narrow.
-        var bars = presentation.CpuMeter
-            ? AutoCapsule.MeterBars(diameter, margin, metrics.CapsuleRadius, result.Dpi, result.ScalePercent, capsule.Width - note - ring) : [];
-        var shown = bars.Length;
-        while (shown > 0 && bars[shown - 1].Right + 2 * margin + note + ring > capsule.Width) shown--;
+        System.Drawing.Rectangle[] Bars(int noteWidth) => presentation.CpuMeter
+            ? AutoCapsule.MeterBars(diameter, margin, metrics.CapsuleRadius, result.Dpi, result.ScalePercent, capsule.Width - noteWidth - ring) : [];
+        int Shown(System.Drawing.Rectangle[] row, int noteWidth)
+        {
+            var count = row.Length;
+            while (count > 0 && row[count - 1].Right + 2 * margin + noteWidth + ring > capsule.Width) count--;
+            return count;
+        }
+        var bars = Bars(note);
+        var shown = Shown(bars, note);
+        // A model's name too long for all three meters goes on two lines, when then they all fit (2026-11-15);
+        // TokenStripForm.DrawRingNote breaks it the same way in the narrower room.
+        var full = ring == 0 ? 0 : AutoCapsule.RingNoteWidth(result.Dpi, result.ScalePercent, presentation.RingNote);
+        var broken = full > 0 && AutoCapsule.RingNoteBroken(result.Dpi, result.ScalePercent, presentation.RingNote) is { } lines
+            ? AutoCapsule.RingNoteWidth(result.Dpi, result.ScalePercent, lines) : full;
+        if (shown < bars.Length && note > 0 && broken < note)
+        {
+            var row = Bars(broken);
+            if (Shown(row, broken) == row.Length) (note, bars, shown) = (broken, row, row.Length);
+        }
+        // Still not all three (a short turn line left the capsule narrow; the user, 2026-11-16: "CPU어디감"): the capsule
+        // widens to the left by what the narrowest meters, the ring's lines (broken in two when that is narrower) and the
+        // ring need, so the CPU line and the meters always show. Its right edge, where it is anchored, stays.
+        var window = result.WindowBounds;
+        if (presentation.CpuMeter && shown < bars.Length)
+        {
+            note = Math.Min(full, broken);
+            var least = AutoCapsule.MeterBars(diameter, margin, metrics.CapsuleRadius, result.Dpi, result.ScalePercent, 0);
+            var wider = least[^1].Right + 2 * margin + note + ring - capsule.Width;
+            if (wider > 0)
+            {
+                window = window with { X = window.X - wider, Width = window.Width + wider };
+                capsule = capsule with { Width = capsule.Width + wider };
+            }
+            bars = Bars(note);
+            shown = Shown(bars, note);
+        }
         if (shown == 0 && ring == 0) return result;
         // The CPU line over the meters' row; the row and all under it move down by it.
         var line = shown > 0 ? AutoCapsule.TopLineHeight(result.Dpi, result.ScalePercent) : 0;
         rise += line;
         var top = capsule.Y + line;
         IntRect Bar(int i) => i < shown ? new(capsule.X + bars[i].X, top + bars[i].Y, bars[i].Width, bars[i].Height) : default;
-        var window = result.WindowBounds;
         return result with
         {
             WindowBounds = new IntRect(window.X, window.Y - rise, window.Width, window.Height + rise),
@@ -247,8 +280,11 @@ internal static class OverlayLayoutCalculator
     }
 
     // A row above the capsule: the context ring, or the CPU meter (alone when the ring is off or not known yet).
-    private static bool HasTopRow(OverlayPresentation p) =>
-        p.CompactMiddle is not null && string.IsNullOrWhiteSpace(p.StatusText) && (p.ContextFill is not null || p.CpuMeter);
+    // A capsule showing a status line ("현재 채팅 확인 대기") keeps the meters but has no ring (user, 2026-11-18:
+    // "현재 채팅 확인 대기 상태에서도 막대그래프 3개는 나오게 해줘").
+    private static bool HasTopRow(OverlayPresentation p) => string.IsNullOrWhiteSpace(p.StatusText)
+        ? p.CompactMiddle is not null && (p.ContextFill is not null || p.CpuMeter)
+        : p.CpuMeter;
 
     private static OverlayLayoutResult CalculateCore(OverlayLayoutRequest request)
     {

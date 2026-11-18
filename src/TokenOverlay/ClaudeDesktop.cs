@@ -493,6 +493,9 @@ internal sealed record ClaudePane(int LeftInset, int RightInset, string? Title, 
 {
     public int TopInset { get; init; }
 
+    // The area ends with the session details rail (a plugin's pane at its right), so its bottom right is free.
+    public bool RailCorner { get; init; }
+
     public CodexWindowInfo Host(CodexWindowInfo window)
     {
         IntRect Fit(IntRect r) => new(r.X + LeftInset, r.Y + TopInset,
@@ -539,7 +542,7 @@ internal sealed class ClaudeDesktopSource
     {
         string? id = null, error = null, title = null, visible = null;
         _weekly?.NotePresence(DateTimeOffset.UtcNow);
-        var paneFacts = new List<(IntRect Bounds, int PaneRight, string? Title)>();
+        var paneFacts = new List<(IntRect Bounds, int PaneRight, string? Title, bool RailCorner)>();
         try
         {
             var root = AutomationElement.FromHandle(target.HostWindow.Handle);
@@ -623,6 +626,34 @@ internal sealed class ClaudeDesktopSource
             ? pane with { Width = columns[1].X - pane.X } : pane;
     }
 
+    // A plugin's pane (a mod's panel, opened by /<command>) is a full-height column at the pane's right, nested in the
+    // content rather than a child of the pane as a side panel is. Returns the area left of it, and whether that area
+    // ends with the session details rail, whose bottom right holds no composer (user's choice, 2026-11-18: the capsule
+    // sits there rather than over the plugin's pane).
+    internal static (IntRect Area, bool RailCorner) BesidePlugin(IntRect pane, IntRect area, IEnumerable<IntRect> plugins,
+        IEnumerable<IntRect> rails)
+    {
+        var tall = pane.Height * 3 / 5;
+        var cut = plugins.Where(p => p.Height >= tall && Math.Abs(p.Right - pane.Right) <= 4
+                && p.X > pane.X + pane.Width / 8 && p.X < area.Right)
+            .Select(p => (int?)p.X).Min();
+        if (cut is not int left) return (area, false);
+        var rail = rails.Any(r => r.Height >= tall && Math.Abs(r.Right - left) <= 4 && r.X > area.X);
+        return (area with { Width = left - area.X }, rail);
+    }
+
+    internal static bool IsPluginPanel(string? name) => name is "플러그인" or "Plugins";
+
+    internal static bool IsSessionRail(string? name, string? className) =>
+        name is "세션 세부정보" or "Session details"
+        || (className?.Contains("--session-rail-w", StringComparison.Ordinal) ?? false);
+
+    private static IntRect Rect(AutomationElement e)
+    {
+        var r = e.Cached.BoundingRectangle;
+        return new IntRect((int)r.X, (int)r.Y, (int)r.Width, (int)r.Height);
+    }
+
     private static IntRect ChatColumn(AutomationElement pane, IntRect bounds, CacheRequest cache)
     {
         var children = new List<IntRect>();
@@ -637,9 +668,9 @@ internal sealed class ClaudeDesktopSource
 
     // Split view: the document title names only the focused pane, so each pane's session comes from its header buttons.
     // One pane is listed only when a side panel narrows it; its chat is then the one in front.
-    private List<(IntRect Bounds, int PaneRight, string? Title)> ReadPanes(AutomationElement root)
+    private List<(IntRect Bounds, int PaneRight, string? Title, bool RailCorner)> ReadPanes(AutomationElement root)
     {
-        var result = new List<(IntRect, int, string?)>();
+        var result = new List<(IntRect, int, string?, bool)>();
         var cache = new CacheRequest();
         cache.Add(AutomationElement.ClassNameProperty);
         cache.Add(AutomationElement.BoundingRectangleProperty);
@@ -647,37 +678,41 @@ internal sealed class ClaudeDesktopSource
         cache.Add(AutomationElement.NameProperty);
         using (cache.Activate())
         {
-            var panes = root.FindAll(TreeScope.Descendants,
+            var groups = root.FindAll(TreeScope.Descendants,
                     new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group))
                 .Cast<AutomationElement>()
-                .Where(g => ClaudePane.IsPaneClass(g.Cached.ClassName) && !g.Cached.IsOffscreen && !g.Cached.BoundingRectangle.IsEmpty)
+                .Where(g => !g.Cached.IsOffscreen && !g.Cached.BoundingRectangle.IsEmpty)
                 .ToArray();
+            var panes = groups.Where(g => ClaudePane.IsPaneClass(g.Cached.ClassName)).ToArray();
             if (panes.Length == 0) return result;
+            var plugins = groups.Where(g => IsPluginPanel(g.Cached.Name)).Select(Rect).ToArray();
+            var rails = groups.Where(g => IsSessionRail(g.Cached.Name, g.Cached.ClassName)).Select(Rect).ToArray();
+            (IntRect, bool) Area(AutomationElement pane, IntRect bounds) =>
+                BesidePlugin(bounds, ChatColumn(pane, bounds, cache), plugins, rails);
             if (panes.Length == 1)
             {
-                var r = panes[0].Cached.BoundingRectangle;
-                var bounds = new IntRect((int)r.X, (int)r.Y, (int)r.Width, (int)r.Height);
-                var chat = ChatColumn(panes[0], bounds, cache);
-                if (chat != bounds) result.Add((chat, bounds.Right, null));
+                var bounds = Rect(panes[0]);
+                var (area, railCorner) = Area(panes[0], bounds);
+                if (area != bounds) result.Add((area, bounds.Right, null, railCorner));
                 return result;
             }
             _index.ResolveUniqueTitle(string.Empty);
             foreach (var pane in panes)
             {
-                var r = pane.Cached.BoundingRectangle;
-                var bounds = new IntRect((int)r.X, (int)r.Y, (int)r.Width, (int)r.Height);
+                var bounds = Rect(pane);
                 var title = pane.FindAll(TreeScope.Descendants,
                         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button))
                     .Cast<AutomationElement>()
                     .Select(b => _index.TitleFromLabel(b.Cached.Name ?? string.Empty))
                     .FirstOrDefault(t => t is not null);
-                result.Add((ChatColumn(pane, bounds, cache), bounds.Right, title));
+                var (area, railCorner) = Area(pane, bounds);
+                result.Add((area, bounds.Right, title, railCorner));
             }
         }
         return result;
     }
 
-    private IReadOnlyList<ClaudePane> Panes(CodexWindowTarget target, List<(IntRect Bounds, int PaneRight, string? Title)> facts,
+    private IReadOnlyList<ClaudePane> Panes(CodexWindowTarget target, List<(IntRect Bounds, int PaneRight, string? Title, bool RailCorner)> facts,
         string? focusedTitle, TokenSnapshot? focusedSnapshot)
     {
         if (facts.Count == 0) { _paneReaders.Clear(); return []; }
@@ -686,7 +721,7 @@ internal sealed class ClaudeDesktopSource
         var top = facts.Min(f => f.Bounds.Top);
         var used = new HashSet<string>(StringComparer.Ordinal);
         var panes = new List<ClaudePane>();
-        foreach (var (bounds, _, title) in facts)
+        foreach (var (bounds, _, title, railCorner) in facts)
         {
             var focused = facts.Count == 1 || (title is not null && title == focusedTitle);
             TokenSnapshot? snapshot = focused ? focusedSnapshot : null;
@@ -697,7 +732,7 @@ internal sealed class ClaudeDesktopSource
                 snapshot = Snapshot(reader, paneId, paneLog, title);
             }
             panes.Add(new ClaudePane(Math.Max(0, bounds.Left - frame.Left), Math.Min(0, bounds.Right - right), title, snapshot, focused)
-                { TopInset = bounds.Top - top });
+                { TopInset = bounds.Top - top, RailCorner = railCorner });
         }
         foreach (var gone in _paneReaders.Keys.Where(k => !used.Contains(k)).ToArray()) _paneReaders.Remove(gone);
         return panes;

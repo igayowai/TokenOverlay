@@ -9,9 +9,11 @@ namespace TokenOverlay;
 // message's text; the account and credential tables are never read.
 // The chat: the window title less " · OpenCode" is a main session's title (sub-agents run in sessions of their own).
 // A turn: from the first user or synthetic message after an idle row up to the next idle row, whose outcome says how
-// it ended. Each assistant row is one model request with its times (created, firstToken, completed) and tokens.
+// it ended. Each assistant row is one step: a model request with its times (created, firstToken, streamed = the answer
+// fully in, completed = after the tools it called ran too) and tokens.
 internal readonly record struct OpenCodeRow(long Seq, string Type, long At, long? Created, long? FirstToken, long? Completed,
-    long Input, long Output, long Reasoning, long CacheRead, long CacheWrite, string? Provider, string? Model, string? Outcome);
+    long Input, long Output, long Reasoning, long CacheRead, long CacheWrite, string? Provider, string? Model, string? Outcome,
+    long? Streamed = null);
 
 internal sealed record OpenCodeRead(TurnStatistics? Turn, IReadOnlyList<TurnStatistics> Recent, long Context, string? Provider, string? Model);
 
@@ -49,12 +51,20 @@ internal static class OpenCodeTurns
             }
         }
 
+        // A turn stopped before any request recorded a token has nothing to show (OpenCode writes no tokens for a request
+        // cut off mid-answer): it is passed over, as 직전 and in the recent list (the user, 2026-11-16, after "직전 0 · 6초
+        // · 0.00"). A chat with nothing else still shows it.
+        static bool Blank(Turn t) => t.Outcome == "interrupted"
+            && t.Requests.All(r => r.Input + r.Output + r.Reasoning + r.CacheRead + r.CacheWrite == 0);
+        var kept = turns.Where(t => !Blank(t)).ToList();
+        if (kept.Count == 0) kept = turns;
+
         // Like the Claude capsule: while a turn runs, the last finished one stays on screen, marked 직전.
         var running = open is not null;
-        var finished = turns.Where(t => t.End is not null && t.Requests.Count > 0).ToList();
+        var finished = kept.Where(t => t.End is not null && t.Requests.Count > 0).ToList();
         TurnStatistics? shown = running
             ? finished.Count > 0 ? Describe(finished[^1], running: true, shownRunning: false) : Describe(open!, true, true)
-            : turns.Count > 0 ? Describe(turns[^1].Requests.Count > 0 || finished.Count == 0 ? turns[^1] : finished[^1], false, false) : null;
+            : kept.Count > 0 ? Describe(kept[^1].Requests.Count > 0 || finished.Count == 0 ? kept[^1] : finished[^1], false, false) : null;
         var recent = finished.AsEnumerable().Reverse().Take(TurnHistory.Size).Select(t => Describe(t, false, false)).ToArray();
         var context = last is { } l ? l.Input + l.CacheRead + l.CacheWrite : 0;
         return new OpenCodeRead(shown, recent, context, last?.Provider, last?.Model);
@@ -73,14 +83,17 @@ internal static class OpenCodeTurns
         foreach (var r in requests)
             if (r.Model is { Length: > 0 } m && (models.Count == 0 || models[^1] != m)) { models.Remove(m); models.Add(m); }
 
-        // 모델: each request from its start to its end, the wait for its first piece in. 생성: from its first piece.
-        // A request that never answered (no first piece and no output) adds nothing to 생성.
+        // 모델: each request from its start until its answer was fully in, the wait for its first piece in. 생성: from its
+        // first piece. The tools a step ran after its answer are left out, as Claude's request times leave them out
+        // (user, 2026-11-16: OpenCode's own tok/s ends there too); a step recorded before "streamed" existed ends at
+        // "completed". A request that never answered (no first piece and no output) adds nothing to 생성.
+        static long End(OpenCodeRow r) => r.Streamed ?? r.Completed!.Value;
         var timed = requests.Where(r => r.Created is not null).ToArray();
         double? modelSeconds = timed.Length == requests.Length && timed.Length > 0
-            ? timed.Sum(r => r.Completed!.Value - r.Created!.Value) / 1000.0 : null;
+            ? timed.Sum(r => Math.Max(0, End(r) - r.Created!.Value)) / 1000.0 : null;
         var generating = requests.Where(r => r.FirstToken is not null || r.Output + r.Reasoning > 0).ToArray();
         double? pureSeconds = generating.Length > 0 && generating.All(r => r.FirstToken is not null)
-            ? generating.Sum(r => r.Completed!.Value - r.FirstToken!.Value) / 1000.0 : null;
+            ? generating.Sum(r => Math.Max(0, End(r) - r.FirstToken!.Value)) / 1000.0 : null;
 
         return new TurnStatistics(t.Start.ToString(System.Globalization.CultureInfo.InvariantCulture),
             requests.Length > 0 ? Sum(r => r.Input + r.CacheRead + r.CacheWrite) : null,
@@ -98,6 +111,78 @@ internal static class OpenCodeTurns
             PureSeconds = pureSeconds,
             PureNote = generating.Length == 0 ? null : pureSeconds is null ? "첫 응답 시각 없음" : null
         };
+    }
+}
+
+// Where OpenCode's automatic compaction starts (user, 2026-11-16: the ring's 100% is that point, as Claude's is).
+// From the global config (~/.config/opencode/opencode.json, else opencode.jsonc), its "compaction" object only:
+// "buffer" is the room kept free, a share ("1%" to "99%") or tokens; unset, or tokens at least the window, keep 15%
+// and at least 16k free; "auto": false means no automatic compaction, so the whole window (opencode.ai/docs/compaction).
+// A project's own config is not read.
+internal static class OpenCodeCompaction
+{
+    internal readonly record struct Setting(bool Auto, double? Share, long? Tokens);
+    internal static readonly Setting Default = new(true, null, null);
+    private static readonly object Gate = new();
+    private static (string Path, DateTime Written, Setting Value)? _cached;
+
+    internal static string DefaultDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "opencode");
+
+    // Read again only when the file is written.
+    internal static Setting Current(string directory)
+    {
+        foreach (var name in new[] { "opencode.json", "opencode.jsonc" })
+        {
+            var path = Path.Combine(directory, name);
+            try
+            {
+                if (!File.Exists(path)) continue;
+                var written = File.GetLastWriteTimeUtc(path);
+                lock (Gate)
+                {
+                    if (_cached is { } c && c.Path == path && c.Written == written) return c.Value;
+                    var value = Parse(File.ReadAllText(path));
+                    _cached = (path, written, value);
+                    return value;
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return _cached?.Value ?? Default; }
+        }
+        return Default;
+    }
+
+    internal static Setting Parse(string json)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json,
+                new System.Text.Json.JsonDocumentOptions { CommentHandling = System.Text.Json.JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("compaction", out var c) || c.ValueKind != System.Text.Json.JsonValueKind.Object) return Default;
+            var auto = !(c.TryGetProperty("auto", out var a) && a.ValueKind == System.Text.Json.JsonValueKind.False);
+            if (c.TryGetProperty("buffer", out var b))
+            {
+                if (b.ValueKind == System.Text.Json.JsonValueKind.String && b.GetString() is { } text && text.Trim() is var share && share.EndsWith('%')
+                    && double.TryParse(share[..^1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var percent)
+                    && percent is >= 1 and <= 99)
+                    return new(auto, percent / 100, null);
+                if (b.ValueKind == System.Text.Json.JsonValueKind.Number && b.TryGetInt64(out var tokens) && tokens > 0)
+                    return new(auto, null, tokens);
+            }
+            return new(auto, null, null);
+        }
+        catch (System.Text.Json.JsonException) { return Default; }
+    }
+
+    // Where automatic compaction starts in a window of `limit` tokens; the whole window without it.
+    internal static long Point(long limit, Setting setting)
+    {
+        if (limit <= 0 || !setting.Auto) return limit;
+        var free = setting.Share is double share ? (long)Math.Round(limit * share)
+            : setting.Tokens is long tokens && tokens < limit ? tokens
+            : Math.Max((long)Math.Round(limit * 0.15), 16_000);
+        return free < limit ? limit - free : limit;
     }
 }
 
@@ -119,9 +204,15 @@ internal sealed class OpenCodeSource
     private (long Count, long Updated) _probe;
     private TokenSnapshot? _snapshot;
     private readonly Dictionary<string, (long Limit, DateTime At)> _limits = new(StringComparer.Ordinal);
+    private readonly string _configDirectory;
+    private OpenCodeCompaction.Setting? _compaction;
     public string? VisibleTitle { get; private set; }
 
-    public OpenCodeSource(string? database = null) => _database = database ?? DefaultDatabase;
+    public OpenCodeSource(string? database = null, string? configDirectory = null)
+    {
+        _database = database ?? DefaultDatabase;
+        _configDirectory = configDirectory ?? OpenCodeCompaction.DefaultDirectory;
+    }
 
     internal static string DefaultDatabase => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "opencode", "opencode.db");
@@ -161,7 +252,10 @@ internal sealed class OpenCodeSource
             (long Count, long Updated) probe = (0, 0);
             Sqlite.Query(db, "select count(*), coalesce(max(time_updated), 0) from session_message where session_id = ?1",
                 s => Sqlite.Bind(s, 1, id), s => probe = (Sqlite.Long(s, 0) ?? 0, Sqlite.Long(s, 1) ?? 0));
-            if (_rowsSession == id && probe == _probe && _snapshot is not null) return (id, _snapshot, null);
+            // A changed compaction setting moves the ring without a new row.
+            var compaction = OpenCodeCompaction.Current(_configDirectory);
+            if (_rowsSession == id && probe == _probe && _snapshot is not null && _compaction == compaction) return (id, _snapshot, null);
+            _compaction = compaction;
             // Another chat, or rows taken away (a revert): read the chat again from its start.
             if (_rowsSession != id || probe.Count < _probe.Count) { _rows.Clear(); _rowsUpdated = 0; _rowsSession = id; }
             _probe = probe;
@@ -170,7 +264,8 @@ internal sealed class OpenCodeSource
                 + " json_extract(data, '$.time.created'), json_extract(data, '$.time.firstToken'), json_extract(data, '$.time.completed'),"
                 + " json_extract(data, '$.tokens.input'), json_extract(data, '$.tokens.output'), json_extract(data, '$.tokens.reasoning'),"
                 + " json_extract(data, '$.tokens.cache.read'), json_extract(data, '$.tokens.cache.write'),"
-                + " json_extract(data, '$.model.providerID'), json_extract(data, '$.model.id'), json_extract(data, '$.outcome')"
+                + " json_extract(data, '$.model.providerID'), json_extract(data, '$.model.id'), json_extract(data, '$.outcome'),"
+                + " json_extract(data, '$.time.streamed')"
                 + " from session_message where session_id = ?1 and type in ('user', 'synthetic', 'assistant', 'idle') and time_updated >= ?2";
             var newest = _rowsUpdated;
             var done = Sqlite.Query(db, rowsSql, s => { Sqlite.Bind(s, 1, id); Sqlite.Bind(s, 2, _rowsUpdated); }, s =>
@@ -178,7 +273,7 @@ internal sealed class OpenCodeSource
                 var row = new OpenCodeRow(Sqlite.Long(s, 0) ?? 0, Sqlite.Text(s, 1) ?? "", Sqlite.Long(s, 2) ?? 0,
                     Sqlite.Long(s, 4), Sqlite.Long(s, 5), Sqlite.Long(s, 6),
                     Sqlite.Long(s, 7) ?? 0, Sqlite.Long(s, 8) ?? 0, Sqlite.Long(s, 9) ?? 0, Sqlite.Long(s, 10) ?? 0, Sqlite.Long(s, 11) ?? 0,
-                    Sqlite.Text(s, 12), Sqlite.Text(s, 13), Sqlite.Text(s, 14));
+                    Sqlite.Text(s, 12), Sqlite.Text(s, 13), Sqlite.Text(s, 14), Sqlite.Long(s, 15));
                 _rows[row.Seq] = row;
                 newest = Math.Max(newest, Sqlite.Long(s, 3) ?? 0);
             });
@@ -187,13 +282,15 @@ internal sealed class OpenCodeSource
 
             var read = OpenCodeTurns.Read(_rows.Values.OrderBy(r => r.Seq).ToArray());
             var limit = Limit(db, read.Provider, read.Model);
+            // The ring and its note count to where automatic compaction starts, as Claude's do.
+            var point = OpenCodeCompaction.Point(limit, compaction);
             var t = read.Turn;
             _snapshot = new TokenSnapshot(id, _database, t?.Total ?? 0, t?.Input ?? 0, t?.Cached ?? 0, t?.Output ?? 0, 0,
                 read.Context, limit, DateTime.UtcNow)
             {
                 Turn = t, ThreadTitle = title, App = HostApp.OpenCode, History = new TurnHistory(read.Recent),
-                ContextFill = limit > 0 && read.Context > 0 ? (double)read.Context / limit : null,
-                RingNote = limit > 0 ? ContextUsage.Note(read.Model, limit) : null
+                ContextFill = point > 0 && read.Context > 0 ? (double)read.Context / point : null,
+                RingNote = point > 0 ? ContextUsage.Note(read.Model, point) : null
             };
             return (id, _snapshot, null);
         }

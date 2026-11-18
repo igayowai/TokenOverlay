@@ -94,6 +94,87 @@ internal static class DeepSeekChecks
             "a worker launched by one of the session's sub-agents counts for that session, not for another");
         Directory.Delete(root, true);
 
+        // The DSH desktop capsule (user, 2026-11-16): the chat in front read from a scratch ~/.dsh, turns counted as
+        // OpenCode's are, the ring against DSH's automatic compaction point.
+        Check(DeepSeekEvents.FrameEnds(two) is [var firstEnd, var bothEnd] && firstEnd == Frame(task1).Length && bothEnd == two.Length
+            && DeepSeekEvents.FrameEnds(two.Concat(Frame(task1).Take(12)).ToArray()).Count == 2 && DeepSeekEvents.FrameEnds([]).Count == 0,
+            "frame walk: each whole frame's end, a frame still being written left for later");
+        var defaults = DeepSeekCompaction.Default;
+        Check(DeepSeekCompaction.Point(1_000_000, defaults, 256_000) == 678_464 && DeepSeekCompaction.Point(1_000_000, defaults, 384_000) == 550_464
+            && DeepSeekCompaction.Point(1_048_576, defaults, 256_000) == 727_040
+            && DeepSeekCompaction.Point(1_048_576, defaults with { Ratio = 0.476837158203125 }, 256_000) == 500_000
+            && DeepSeekCompaction.Point(1_000_000, defaults with { Ratio = 0.476837158203125 }, 384_000) == 476_837
+            && DeepSeekCompaction.Point(1_000_000, defaults with { Auto = false }, 256_000) == 1_000_000 && DeepSeekCompaction.Point(0, defaults, 256_000) == 0
+            && DeepSeekCompaction.OutputCap("opencode-go", "deepseek-v4.1-flash") == 384_000 && DeepSeekCompaction.OutputCap("deepseek-official", "deepseek-flash") == 256_000,
+            "compaction point: floor(min(W × ratio, W − O − 65,536)), the window when auto is off (727,040 and 500,000 as DSH's own notes give)");
+        Check(DeepSeekCompaction.Parse("- id: agent-default-model\n  config:\n    thresholdRatio: 0.3\n# note: thresholdRatio: 0.2\n"
+                + "- id: \"compaction-basic\"\n  name: \"@deepseek-ai/dsh-compaction-basic\"\n  config:\n    thresholdRatio: 0.476837158203125 # 500k\n"
+                + "    headroomTokens: 32768\n    auto: false\n- id: locale\n  config:\n    auto: true\n")
+                == new DeepSeekCompaction.Setting(false, 0.476837158203125, 32_768)
+            && DeepSeekCompaction.Parse("- id: compaction-basic\r\n  config:\r\n    thresholdRatio: 1.5\r\n") == defaults && DeepSeekCompaction.Parse("") == defaults,
+            "profile: only the compaction-basic entry's ratio, headroom and auto are read; comments, other entries and a ratio out of range are not");
+        // The first token as DSH times it: a block start or usage before it is no token; a folded text or tool-call run
+        // counts from its first piece, a single delta from its own time.
+        long? stepAt = 1000;
+        long noWindow = 0;
+        static string Streamed(string pieces) => "{\"type\":\"assistant/message\",\"seq\":0,\"time\":5000,\"data\":{\"usage\":{\"outputTokens\":10},\"stream\":[" + pieces + "]}}";
+        var folded = DeepSeekEvents.Row(Streamed("{\"type\":\"chunk\",\"time\":1500,\"chunk\":{\"type\":\"block-start\",\"index\":0}},"
+            + "{\"type\":\"tool-call-chunks\",\"time0\":2500,\"index\":0},{\"type\":\"text-chunks\",\"time0\":3000,\"index\":1}"), 1, ref stepAt, ref noWindow);
+        stepAt = 1000;
+        var single = DeepSeekEvents.Row(Streamed("{\"type\":\"chunk\",\"time\":1500,\"chunk\":{\"type\":\"text-delta\",\"text\":\"\"}},"
+            + "{\"type\":\"chunk\",\"time\":1800,\"chunk\":{\"type\":\"usage\"}},{\"type\":\"chunk\",\"time\":2200,\"chunk\":{\"type\":\"reasoning-delta\",\"text\":\"a\"}}"), 2, ref stepAt, ref noWindow);
+        Check(folded is { FirstToken: 2500, Created: 1000, Completed: 5000 } && single is { FirstToken: 2200 },
+            "first token: block starts, usage and empty deltas are no token; a folded run counts from its first piece");
+        Check(DeepSeekSessionSource.SessionTitle("긴 문서 요약 — DeepSeek Harness") == "긴 문서 요약" && DeepSeekSessionSource.SessionTitle("DeepSeek Harness") is null
+            && DeepSeekSessionSource.SessionTitle(" — DeepSeek Harness") is null && DeepSeekSessionSource.SessionTitle("x - DeepSeek Harness") is null,
+            "the window title less \" — DeepSeek Harness\" is the chat's title");
+
+        var dsh = Path.Combine(Path.GetTempPath(), "TokenOverlay-dsh-capsule-check");
+        if (Directory.Exists(dsh)) Directory.Delete(dsh, true);
+        var projcache = Path.Combine(dsh, "storages", "session_projcache", "sessions");
+        Directory.CreateDirectory(projcache);
+        static string Cached(string title) => "{\"version\":7,\"record\":{\"rows\":{\"title\":{\"ver\":1,\"seq\":3,\"val\":\"" + title + "\"}}}}";
+        File.WriteAllText(Path.Combine(projcache, "session-a.json"), Cached("긴 문서 요약"));
+        File.WriteAllText(Path.Combine(projcache, "session-b.json"), Cached("두 개"));
+        File.WriteAllText(Path.Combine(projcache, "c.json"), Cached("두 개"));
+        File.WriteAllText(Path.Combine(projcache, "broken.json"), "{ not json");
+        var chat = Path.Combine(dsh, "sessions", "--C-work--", "session-a");
+        Directory.CreateDirectory(chat);
+        var logFile = Path.Combine(chat, "session.v4.jsonl.zstd");
+        var context = "{\"type\":\"request/context\",\"seq\":0,\"time\":500,\"data\":{\"provider\":\"deepseek-official\",\"model\":\"deepseek-flash\",\"contextWindow\":1000000}}\n";
+        File.WriteAllBytes(logFile, Frame(context).Concat(Frame(task1)).ToArray());
+        var profile = Path.Combine(dsh, "cordis.patch.yml");
+        File.WriteAllText(profile, "- id: compaction-basic\n  config:\n    thresholdRatio: 0.476837158203125\n");
+        var harness = new DeepSeekSessionSource(dsh, profile);
+        var shownChat = harness.Read("긴 문서 요약");
+        Check(shownChat is { Id: "session-a", Error: null, Snapshot: { App: HostApp.DeepSeekHarness, ThreadTitle: "긴 문서 요약", Turn: { Output: 1000, Running: false } turnA } }
+            && Math.Abs(turnA.TokensPerSecond!.Value - 100) < 0.01 && Math.Abs(turnA.ModelTokensPerSecond!.Value - 250) < 0.01
+            && Math.Abs(turnA.PureTokensPerSecond!.Value - 500) < 0.01,
+            "a DSH chat: TPS over the turn, 모델 over its requests from their step start, 생성 from their first piece, both to the message");
+        Check(shownChat.Snapshot!.ContextUsedTokens == 1000 && shownChat.Snapshot.ContextWindowTokens == 1_000_000
+            && shownChat.Snapshot.RingNote == "Deepseek V4.1 Flash\n477K" && Math.Abs(shownChat.Snapshot.ContextFill!.Value - 1000 / 476_837.0) < 1e-12,
+            "the ring: the last request's input with its cache reads against the compaction point (deepseek-flash named V4.1 Flash)");
+        Check(TurnPresentation.Create(shownChat.Snapshot) is { SubLine: "모델 250.00 TPS", SubLine2: "생성 500.00 TPS" } dshShown && dshShown.Secondary.Value == "100.00",
+            "the capsule shows TPS, 모델 and 생성 for DSH");
+        // A new turn runs: the finished one stays, marked running; half a frame is left for the next read.
+        var runningFrame = Frame(Event("turn/start", 30000) + "\n" + Event("step/start", 30100) + "\n");
+        using (var append = new FileStream(logFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+            append.Write(runningFrame.Concat(Frame(task2).Take(10)).ToArray());
+        Check(harness.Read("긴 문서 요약").Snapshot?.Turn is { Output: 1000, Running: true },
+            "a turn still running keeps the finished one on screen, marked running; a frame being written waits");
+        var rest = Frame(Message(32000, 50) + "\n" + "{\"type\":\"turn/end\",\"seq\":0,\"time\":33000,\"data\":{\"turn\":3,\"reason\":{\"kind\":\"aborted\"}}}\n");
+        File.WriteAllBytes(logFile, Frame(context).Concat(Frame(task1)).Concat(runningFrame).Concat(rest).ToArray());
+        var stopped = harness.Read("긴 문서 요약").Snapshot;
+        Check(stopped?.Turn is { Output: 50, State: "중단", Running: false } && stopped.History?.Turns.Count == 2,
+            "new frames are read on; a turn the user stopped (aborted) reads 중단; the earlier turn moves to the list");
+        File.WriteAllText(profile, "- id: compaction-basic\n  config:\n    auto: false\n");
+        File.SetLastWriteTimeUtc(profile, DateTime.UtcNow.AddMinutes(1));
+        Check(harness.Read("긴 문서 요약").Snapshot?.RingNote == "Deepseek V4.1 Flash\n1M", "a changed profile moves the ring without a new line");
+        Check(harness.Read("두 개") is { Id: null, Error: "같은 제목의 DSH 세션이 여럿임" }
+            && harness.Read("없는 제목") is { Id: null, Error: "현재 화면 제목과 일치하는 DSH 세션 없음" },
+            "a title shared by two chats and a missing one are not guessed");
+        Directory.Delete(dsh, true);
+
         // This PC's real sessions (numbers only): each one's last finished task as the overlay counts it.
         var real = new List<object>();
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -150,6 +231,21 @@ internal static class DeepSeekChecks
                     if (form.Region is { } cut && !cut.IsVisible(px, py, g)) bitmap.SetPixel(px, py, Color.Transparent);
             bitmap.Save(Path.Combine(directory, $"deepseek-{dpi}-{name}.png"));
         }
-        return new { Passed = checks.Count, Checks = checks, Real = real };
+        // The DSH desktop capsule on this PC's real chats (numbers only), by the titles in DSH's own cache.
+        var capsules = new List<object>();
+        var realCache = Path.Combine(home, ".dsh", "storages", "session_projcache", "sessions");
+        if (Directory.Exists(realCache))
+        {
+            var reader = new DeepSeekSessionSource();
+            foreach (var file in new DirectoryInfo(realCache).EnumerateFiles("*.json").OrderByDescending(f => f.LastWriteTimeUtc).Take(4))
+                if (DeepSeekSessionSource.TitleIn(File.ReadAllBytes(file.FullName)) is { Length: > 0 } title
+                    && reader.Read(title) is var read)
+                    capsules.Add(new { Session = Path.GetFileNameWithoutExtension(file.Name), read.Error, read.Snapshot?.Turn?.Total,
+                        read.Snapshot?.Turn?.Cached, read.Snapshot?.Turn?.Output,
+                        read.Snapshot?.Turn?.Seconds, read.Snapshot?.Turn?.ModelSeconds, read.Snapshot?.Turn?.PureSeconds, read.Snapshot?.Turn?.ModelRequests,
+                        read.Snapshot?.Turn?.State, read.Snapshot?.Turn?.Model, read.Snapshot?.ContextUsedTokens, read.Snapshot?.ContextWindowTokens,
+                        read.Snapshot?.ContextFill, read.Snapshot?.RingNote, Recent = read.Snapshot?.History?.Turns.Count });
+        }
+        return new { Passed = checks.Count, Checks = checks, Real = real, Capsules = capsules };
     }
 }

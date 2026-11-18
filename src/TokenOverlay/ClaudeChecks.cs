@@ -75,6 +75,22 @@ internal static class ClaudeChecks
             && OverlayContext.InnerAnchor(AnchorMode.InsideBottomRight, null) == AnchorMode.InsideBottomRight
             && OverlayContext.InnerAnchor(AnchorMode.TitleBarTopRight, new ClaudePane(280, -1057, "a", null, false)) == AnchorMode.TitleBarTopRight,
             "bottom-right capsule moved inward (left pane, chat beside a side panel) goes to the top right; the rightmost pane keeps its corner");
+        // A plugin's pane, as measured 2026-11-18: main pane 600..3840, session rail 1899..2698, plugin pane 2699..3840.
+        var mainPane = new IntRect(600, 90, 3240, 1950);
+        IntRect[] plugin = [new(2699, 90, 1141, 1950)], rail = [new(1899, 90, 799, 1950)];
+        Check(ClaudeDesktopSource.BesidePlugin(mainPane, mainPane, plugin, rail) == (new IntRect(600, 90, 2099, 1950), true)
+            && ClaudeDesktopSource.BesidePlugin(mainPane, mainPane, plugin, []) == (new IntRect(600, 90, 2099, 1950), false)
+            && ClaudeDesktopSource.BesidePlugin(mainPane, mainPane, [], rail) == (mainPane, false)
+            && ClaudeDesktopSource.BesidePlugin(mainPane, mainPane, [new(2699, 90, 1141, 300)], rail) == (mainPane, false)
+            && ClaudeDesktopSource.BesidePlugin(mainPane, new IntRect(600, 90, 1700, 1950), plugin, rail) == (new IntRect(600, 90, 1700, 1950), false),
+            "plugin pane: the area ends where it begins, flagged when the session rail sits just left of it; short or absent panels change nothing");
+        Check(OverlayContext.InnerAnchor(AnchorMode.InsideBottomRight, new ClaudePane(616, -1141, null, null, true) { RailCorner = true })
+                == AnchorMode.InsideBottomRight
+            && OverlayContext.InnerAnchor(AnchorMode.InsideBottomRight, new ClaudePane(616, -1141, null, null, true)) == AnchorMode.InsideTopRight
+            && ClaudeDesktopSource.IsPluginPanel("플러그인") && !ClaudeDesktopSource.IsPluginPanel("플러그인 컨트롤")
+            && ClaudeDesktopSource.IsSessionRail("세션 세부정보", null)
+            && ClaudeDesktopSource.IsSessionRail(null, "relative flex w-[var(--session-rail-w,17.5rem)] min-h-0 flex"),
+            "capsule left of a plugin's pane keeps the bottom right over the session rail, and goes to the top right over the chat");
         Check(OverlayContext.CodexAnchor(AnchorMode.InsideBottomRight, home: false, maximized: false) == AnchorMode.InsideTopRight
             && OverlayContext.CodexAnchor(AnchorMode.InsideBottomRight, home: false, maximized: true) == AnchorMode.InsideBottomRight
             && OverlayContext.CodexAnchor(AnchorMode.InsideBottomRight, home: true, maximized: true) == AnchorMode.InsideTopRight

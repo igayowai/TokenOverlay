@@ -198,6 +198,13 @@ internal static class AutoCapsuleChecks
         // capsule's full width, so the overlay is one rounded rectangle (drawn for review).
         // A graphics card reading (fan percent, temperature).
         static GpuReading Gpu(int fan,int temp)=>new(fan,temp);
+        static string? RunningOrOnPath(string name)
+        {
+            foreach(var p in System.Diagnostics.Process.GetProcessesByName(name))
+                using(p) try { if(p.MainModule?.FileName is {} f && File.Exists(f)) return f; } catch(Exception e) when(e is System.ComponentModel.Win32Exception or InvalidOperationException) { }
+            return (Environment.GetEnvironmentVariable("PATH")??"").Split(';',StringSplitOptions.RemoveEmptyEntries)
+                .Select(d=>Path.Combine(d.Trim(),name+".exe")).FirstOrDefault(p=>File.Exists(p) && !p.Contains("WindowsApps",StringComparison.OrdinalIgnoreCase));
+        }
         static string? PythonOnPath()=>(Environment.GetEnvironmentVariable("PATH")??"").Split(';',StringSplitOptions.RemoveEmptyEntries)
             .Select(d=>Path.Combine(d.Trim(),"python.exe")).FirstOrDefault(p=>File.Exists(p) && !p.Contains("WindowsApps",StringComparison.OrdinalIgnoreCase));
         Bitmap Shot(TokenStripForm f)
@@ -308,7 +315,24 @@ internal static class AutoCapsuleChecks
             }
             form.SetTopLine(null);
             Check(CpuTop.HasLogo("python") && CpuTop.HasLogo("pythonw") && CpuTop.HasLogo("Python3.14") && !CpuTop.HasLogo("py")
-                && !CpuTop.HasLogo("pythonista") && !CpuTop.HasLogo("dotnet"),"CPU line: python, pythonw, python3.14 go by the logo; other programs by name");
+                && !CpuTop.HasLogo("pythonista") && CpuTop.HasLogo("dotnet") && CpuTop.HasLogo("java") && CpuTop.HasLogo("javaw") && CpuTop.HasLogo("node")
+                && !CpuTop.HasLogo("nodemon") && !CpuTop.HasLogo("cargo") && !CpuTop.HasLogo("KakaoTalk")
+                && CpuTop.IsPython("python") && !CpuTop.IsPython("java"),
+                "CPU line: python, pythonw, python3.14 and other languages' runtimes (java, node, dotnet …, 2026-11-18) go by their icon; other programs by name");
+            // Draft pictures of the runtimes by their own icons, from the programs on this PC (2026-11-18).
+            foreach(var kind in new[]{OverlayThemeKind.Light,OverlayThemeKind.Dark})
+            foreach(var (name,text,exe) in new[]{("java","Claude java 10% · 빌드 확인","java"),("node","GPT node 12% · 긴 문서 요약","node"),
+                ("dotnet","Claude dotnet 37% · 토큰 오버레이","dotnet")})
+            {
+                var file=RunningOrOnPath(exe);
+                if(file is null) { Console.WriteLine($"SKIP CPU line {name} draft: no {exe}.exe running or on PATH"); continue; }
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.SetMeters(1.0,0.72,Gpu(30,35));
+                form.SetTopLines([new(text,file,CpuTop.LogoFile(text[..text.IndexOf(' ')])),new("Claude python 6% · 토큰 오버레이",PythonOnPath(),CpuTop.LogoFile("Claude"))]);
+                using var shot=Shot(form);
+                shot.Save(Path.Combine(directory,$"topline-{(kind==OverlayThemeKind.Light?"light":"dark")}-{name}.png"));
+            }
+            form.SetTopLine(null);
             var python=PythonOnPath();
             if(python is null) Console.WriteLine("SKIP CPU line logo: no python.exe on PATH");
             else
@@ -338,9 +362,9 @@ internal static class AutoCapsuleChecks
             var alone=plainTwo with {CpuMeter=true};
             var layout=OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:alone));
             Check(layout.FullTopRow && layout.RingBounds.IsEmpty && layout.RingNoteBounds.IsEmpty && !layout.PageBarBounds.IsEmpty
-                && OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:alone with {StatusText="확인 중…"})).CpuBarBounds.IsEmpty
+                && !OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:alone with {StatusText="확인 중…"})).PageBarBounds.IsEmpty
                 && OverlayLayoutCalculator.Calculate(new(Host(144,1920),AnchorMode.InsideTopRight,true,10,false,Presentation:alone)).CpuBarBounds.IsEmpty,
-                "CPU meter: shown alone when there is no ring; not on a waiting capsule or the open panel");
+                "CPU meter: shown alone when there is no ring, and on a waiting capsule too (user, 2026-11-18); not on the open panel");
             using var form=new TokenStripForm();
             _=form.Handle;
             form.SetPresentation(alone);
@@ -624,6 +648,87 @@ internal static class AutoCapsuleChecks
             using var bitmap=new Bitmap(form.Width,form.Height);
             form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
             bitmap.Save(Path.Combine(directory,$"{name}.png"));
+        }
+        // Draft: the DSH capsule (user, 2026-11-16), at a real DSH turn's numbers: 18 requests, 11,322 output tokens over
+        // 399.9 s, 244.6 s of requests, 93.7 s generating; context 423,861 against the compaction point 476,837
+        // (1,000,000 window, thresholdRatio 0.476837158203125, 384,000 output cap); CPU meter on.
+        foreach(var (name,kind) in new[]{("dsh-dark",OverlayThemeKind.Dark),("dsh-light",OverlayThemeKind.Light)})
+        {
+            var point=DeepSeekCompaction.Point(1_000_000,DeepSeekCompaction.Default with { Ratio=0.476837158203125 },384_000);
+            var harness=new TokenSnapshot("x","x",0,0,0,0,0,0,0,default) { App=HostApp.DeepSeekHarness, ThreadTitle="긴 문서 요약",
+                Turn=new TurnStatistics("t",7_518_596,11_322,7_091_712,399.914,"완료",false,null)
+                    { ModelSeconds=244.562, ModelRequests=18, PureSeconds=93.702, Model="deepseek-v4.1-flash" },
+                ContextFill=423_861.0/point, RingNote=ContextUsage.Note("deepseek-v4.1-flash",point) };
+            var p=TurnPresentation.Create(harness) with { CpuMeter=true };
+            Check(point==476_837 && p is { SubLine: "모델 46.30 TPS", SubLine2: "생성 120.83 TPS", RingNote: "Deepseek V4.1 Flash\n477K" }
+                && p.Secondary.Value=="28.31" && p.Primary.Value=="753만",
+                $"DSH draft {name}: TPS, 모델 and 생성 from one DSH turn, the ring against DSH's compaction point");
+            using var form=new TokenStripForm();
+            form.SetPresentation(p);
+            form.ApplyTheme(OverlayThemePalette.For(kind));
+            form.ApplyLayout(OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:p)));
+            form.SetMeters(0.16,0.65,Gpu(38,52));
+            using var bitmap=new Bitmap(form.Width,form.Height);
+            form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
+            bitmap.Save(Path.Combine(directory,$"{name}.png"));
+        }
+        // A long model name with the CPU meter (user, 2026-11-15, "잘린다 막대그래프가": DeepSeek V4.1 Flash in OpenCode left
+        // two of the three bars): the name goes on two lines and all three bars stay, clear of it.
+        foreach(var dpi in new uint[]{96,120,144,192})
+        {
+            var longName=new TokenSnapshot("x","x",0,0,0,0,0,0,0,default) { App=HostApp.OpenCode, ThreadTitle="긴 문서 요약",
+                Turn=new TurnStatistics("t",13_020_000,65_496,4_870_000,1034,"완료",false,null)
+                    { ModelSeconds=1032.4, ModelRequests=35, PureSeconds=764.2, Model="deepseek-v4.1-flash" },
+                // 230k of the 500k where compaction starts (buffer "50%", 2026-11-16).
+                ContextFill=0.46, RingNote=ContextUsage.Note("deepseek-v4.1-flash",OpenCodeCompaction.Point(1_000_000,OpenCodeCompaction.Parse("""{"compaction":{"buffer":"50%"}}"""))) };
+            var p=TurnPresentation.Create(longName) with { CpuMeter=true };
+            var layout=OverlayLayoutCalculator.Calculate(new(Host(dpi,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:p));
+            var natural=AutoCapsule.RingNoteWidth(dpi,layout.ScalePercent,p.RingNote);
+            Check(!layout.PageBarBounds.IsEmpty && layout.PageBarBounds.Right<layout.RingNoteBounds.Left && !layout.RingNoteBounds.IsEmpty
+                && layout.RingNoteBounds.Width<=natural,
+                $"Long model name: all three meters stay and the name keeps clear of them ({dpi} DPI; {layout.PageBarBounds} {layout.RingNoteBounds} natural {natural})");
+            // At 192 DPI the name is broken in two, as on the user's screen.
+            if(dpi!=192) continue;
+            Check(layout.RingNoteBounds.Width<natural,"Long model name: at 192 DPI the name goes on two lines");
+            foreach(var (name,kind) in new[]{("opencode-meters-light",OverlayThemeKind.Light),("opencode-meters-dark",OverlayThemeKind.Dark)})
+            {
+                using var form=new TokenStripForm();
+                form.SetPresentation(p);
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.ApplyLayout(layout);
+                form.SetMeters(0.16,0.65,Gpu(38,52));
+                using var bitmap=new Bitmap(form.Width,form.Height);
+                form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
+                bitmap.Save(Path.Combine(directory,$"{name}.png"));
+            }
+        }
+        // A short turn line under a long model name (user, 2026-11-16, "CPU어디감": "직전 0 6초 0.00" left no room for any
+        // meter, so the CPU line went too): the capsule widens to the left, its right edge where it was.
+        foreach(var dpi in new uint[]{96,120,144,192})
+        {
+            var shortTurn=new TokenSnapshot("x","x",0,0,0,0,0,0,0,default) { App=HostApp.OpenCode, ThreadTitle="긴 문서 요약",
+                Turn=new TurnStatistics("t",0,0,0,6,"완료",true,null) { ModelRequests=1, Model="deepseek-v4.1-flash" },
+                ContextFill=0.12, RingNote=ContextUsage.Note("deepseek-v4.1-flash",500_000) };
+            var p=TurnPresentation.Create(shortTurn) with { CpuMeter=true };
+            var plain=OverlayLayoutCalculator.Calculate(new(Host(dpi,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:p with { CpuMeter=false }));
+            var layout=OverlayLayoutCalculator.Calculate(new(Host(dpi,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:p));
+            int Right(OverlayLayoutResult r) => r.WindowBounds.X+r.CapsuleBounds.Right;
+            Check(!layout.PageBarBounds.IsEmpty && !layout.TopLineBounds.IsEmpty && !layout.RingNoteBounds.IsEmpty
+                && layout.PageBarBounds.Right<layout.RingNoteBounds.Left && Right(layout)==Right(plain)
+                && layout.CapsuleBounds.Width>plain.CapsuleBounds.Width && layout.ScalePercent==plain.ScalePercent,
+                $"Short turn line: the capsule widens left so the CPU line and all three meters stay ({dpi} DPI; {plain.CapsuleBounds} → {layout.CapsuleBounds})");
+            if(dpi!=192) continue;
+            foreach(var (name,kind) in new[]{("opencode-short-light",OverlayThemeKind.Light),("opencode-short-dark",OverlayThemeKind.Dark)})
+            {
+                using var form=new TokenStripForm();
+                form.SetPresentation(p);
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.ApplyLayout(layout);
+                form.SetMeters(0.16,0.65,Gpu(38,52));
+                using var bitmap=new Bitmap(form.Width,form.Height);
+                form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
+                bitmap.Save(Path.Combine(directory,$"{name}.png"));
+            }
         }
         // Draft: the capsule and the open list with 억, at this PC's measured turn sizes (p25, p50, p90 of 2,904 turns) and two large ones.
         foreach(var (name,kind) in new[]{("eok-dark",OverlayThemeKind.Dark),("eok-light",OverlayThemeKind.Light)})
@@ -945,6 +1050,32 @@ internal static class AutoCapsuleChecks
         var expandedRing=OverlayLayoutCalculator.Calculate(new(Host(96,1920),AnchorMode.InsideTopRight,true,10,false,Presentation:plainTwo with {ContextFill=0.5}));
         Check(expandedRing.RingBounds.IsEmpty && OverlayLayoutCalculator.Calculate(new(Host(96,4000),AnchorMode.InsideTopRight,false,0,false,
             Presentation:plainTwo with {ContextFill=0.5,StatusText="확인 중…"})).RingBounds.IsEmpty,"no ring on the open panel or a waiting capsule");
+        // Chat not known yet, meters on (user, 2026-11-18): the three meters and the CPU line still stand over the capsule; no ring.
+        {
+            var waitOff=OverlayPresentationBuilder.CreateWaiting("현재 채팅 확인 대기",DisplayField.Total,DisplayField.ContextPercent,DisplayField.Total)
+                with { App=HostApp.Claude, ContextFill=0.5 };
+            var waitOn=waitOff with { CpuMeter=true };
+            var offLayout=OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:waitOff));
+            var onLayout=OverlayLayoutCalculator.Calculate(new(Host(144,4000),AnchorMode.InsideTopRight,false,0,false,Presentation:waitOn));
+            Check(!offLayout.FullTopRow && offLayout.RingModuleBounds.IsEmpty
+                && onLayout.FullTopRow && !onLayout.RamBarBounds.IsEmpty && !onLayout.PageBarBounds.IsEmpty && onLayout.RingBounds.IsEmpty
+                && !onLayout.TopLineBounds.IsEmpty && onLayout.CapsuleBounds.Right==offLayout.CapsuleBounds.Right
+                && onLayout.CapsuleBounds.Width>=offLayout.CapsuleBounds.Width,
+                $"waiting: with the meters on, all three and the CPU line stand over the status capsule, no ring; off, nothing ({onLayout.CapsuleBounds} {onLayout.PageBarBounds})");
+            foreach(var kind in new[]{OverlayThemeKind.Light,OverlayThemeKind.Dark})
+            {
+                using var form=new TokenStripForm();
+                _=form.Handle;
+                form.SetPresentation(waitOn);
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.ApplyLayout(onLayout);
+                form.SetMeters(0.43,0.62,new GpuReading(55,62));
+                form.SetTopLines([new CpuTop.TopRow("Claude python 6% · 토큰 오버레이",null,CpuTop.LogoFile("Claude"))]);
+                using var bitmap=new Bitmap(form.Width,form.Height);
+                form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height));
+                bitmap.Save(Path.Combine(directory,$"waiting-meters-{(kind==OverlayThemeKind.Light?"light":"dark")}.png"));
+            }
+        }
         Check(AutoCapsule.SplitNoteCount("캐시 만료 109.0k")==("캐시 만료","109.0k") && AutoCapsule.SplitNoteCount("캐시 만료 1.20M") is not null
             && AutoCapsule.SplitNoteCount("압축됨 · 새로 저장") is null && AutoCapsule.SplitNoteCount("캐시 47분 남음") is null
             && AutoCapsule.SplitNoteCount("캐시히트 99.1%") is null && AutoCapsule.SplitNotePercent("캐시히트 99.1%")==("캐시히트","99.1%")

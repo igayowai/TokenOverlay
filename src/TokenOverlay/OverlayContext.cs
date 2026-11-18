@@ -26,6 +26,7 @@ internal sealed partial class OverlayContext : ApplicationContext
     private readonly DriveShareLink _driveLink;
     private readonly ClaudeDesktopSource _claude;
     private readonly OpenCodeSource _openCodeSource = new();
+    private readonly DeepSeekSessionSource _deepSeekSessions = new();
     private readonly DeepSeekRateSource _deepSeek = DeepSeekRateSource.ForThisPc();
     private string? _pendingVisibleTitle;
     private HostApp _pendingApp;
@@ -135,7 +136,7 @@ internal sealed partial class OverlayContext : ApplicationContext
             "현재 채팅 확인 중…",
             _settings.CollapsedPrimaryField,
             _settings.CollapsedSecondaryField,
-            _settings.VisibleFields);
+            _settings.VisibleFields) with { CpuMeter = _settings.CpuMeterEnabled };
         _ = _targetHighlight.Handle;
         _theme = new PreferredOverlayThemeSource(new WindowsOverlayThemeSource(), _settings.Theme);
         _themeBinding = new OverlayThemeBinding(
@@ -246,7 +247,8 @@ internal sealed partial class OverlayContext : ApplicationContext
                 $"채팅 {shortPendingId} 집계 대기…",
                 _settings.CollapsedPrimaryField,
                 _settings.CollapsedSecondaryField,
-                _settings.VisibleFields) with { App = _pendingApp, HistoryFooter = WeeklyFooter(_pendingApp), Sessions = SessionsFor(_pendingApp) };
+                _settings.VisibleFields) with { App = _pendingApp, HistoryFooter = WeeklyFooter(_pendingApp), Sessions = SessionsFor(_pendingApp),
+                CpuMeter = _settings.CpuMeterEnabled };
             _presentation = WithFreeTokens(_presentation);
             _form.SetPresentation(_presentation);
             UpdateSessionMenuText();
@@ -258,7 +260,8 @@ internal sealed partial class OverlayContext : ApplicationContext
             _lastSnapshot = null;
             _presentation = OverlayPresentationBuilder.CreateWaiting(
                 "현재 채팅 확인 대기", DisplayField.Total, DisplayField.ContextPercent, DisplayField.Total)
-                with { App = _pendingApp, HistoryFooter = WeeklyFooter(_pendingApp), Sessions = SessionsFor(_pendingApp) };
+                with { App = _pendingApp, HistoryFooter = WeeklyFooter(_pendingApp), Sessions = SessionsFor(_pendingApp),
+                    CpuMeter = _settings.CpuMeterEnabled };
             _presentation = WithFreeTokens(_presentation);
             _form.SetPresentation(_presentation);
         }
@@ -441,6 +444,20 @@ internal sealed partial class OverlayContext : ApplicationContext
                         RouteStatus: openCode.Route,
                         VisibleTitle: _openCodeSource.VisibleTitle,
                         App: HostApp.OpenCode,
+                        Panes: (IReadOnlyList<ClaudePane>)Array.Empty<ClaudePane>());
+                }
+
+                // DeepSeek Harness desktop: its chat's numbers from DSH's own session log (DeepSeekSessions.cs).
+                if (foreground?.App == HostApp.DeepSeekHarness)
+                {
+                    var harness = _deepSeekSessions.Poll(foreground);
+                    return (
+                        Snapshot: harness.Snapshot,
+                        Version: harness.SessionVersion,
+                        ThreadId: harness.Route.ThreadId,
+                        RouteStatus: harness.Route,
+                        VisibleTitle: _deepSeekSessions.VisibleTitle,
+                        App: HostApp.DeepSeekHarness,
                         Panes: (IReadOnlyList<ClaudePane>)Array.Empty<ClaudePane>());
                 }
 
@@ -818,9 +835,10 @@ internal sealed partial class OverlayContext : ApplicationContext
         chosen == AnchorMode.InsideBottomRight && (home || !maximized) ? AnchorMode.InsideTopRight : chosen;
 
     // A capsule moved inward, into a split-view pane left of another or a chat column beside a side panel, sits at
-    // that area's top right rather than its bottom right, where it would cover the composer next to the boundary.
+    // that area's top right rather than its bottom right, where it would cover the composer next to the boundary. An
+    // area that ends with the session details rail (left of a plugin's pane) keeps its bottom right: no composer there.
     internal static AnchorMode InnerAnchor(AnchorMode chosen, ClaudePane? pane) =>
-        chosen == AnchorMode.InsideBottomRight && pane is { RightInset: not 0 } ? AnchorMode.InsideTopRight : chosen;
+        chosen == AnchorMode.InsideBottomRight && pane is { RightInset: not 0, RailCorner: false } ? AnchorMode.InsideTopRight : chosen;
 
     // While no chat is known the Ctrl list still shows the account's weekly line for the app in front.
     private string? WeeklyFooter(HostApp app) => app switch

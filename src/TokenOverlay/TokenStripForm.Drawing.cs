@@ -861,6 +861,9 @@ internal sealed partial class TokenStripForm
     {
         using var noteFont = AutoCapsule.LabelFont(layout.Dpi, layout.ScalePercent);
         var lines = note.Split('\n');
+        // The model's name on two lines where the layout gave the lines less than their width (OverlayLayoutCalculator.WithRing).
+        if (AutoCapsule.RingNoteWidth(layout.Dpi, layout.ScalePercent, lines) > box.Width
+            && AutoCapsule.RingNoteBroken(layout.Dpi, layout.ScalePercent, note) is { } broken) lines = broken;
         var lineHeight = TextRenderer.MeasureText("가Ag", noteFont, Size.Empty, AutoCapsule.Flags).Height;
         var top = box.Top + (box.Height - lines.Length * lineHeight) / 2;
         for (var i = 0; i < lines.Length; i++)
@@ -968,7 +971,8 @@ internal sealed partial class TokenStripForm
         }
         // A program shown by its logo (Python, the user's ask on 2026-11-10): its file's icon, as tall as the text, in
         // place of its name. Without the icon the name stays.
-        if (row.Logo is { } logo && space > 0 && CpuTop.HasLogo(line[..space]) && TopLogo(ref logoImage, logo, font.Height, whole: false) is { } image)
+        if (row.Logo is { } logo && space > 0 && CpuTop.HasLogo(line[..space])
+            && TopLogo(ref logoImage, logo, font.Height, whole: !CpuTop.IsPython(line[..space])) is { } image)
         {
             graphics.DrawImageUnscaled(image, text.Left, text.Top + (text.Height - image.Height) / 2);
             text = Rectangle.FromLTRB(text.Left + image.Width + gap, text.Top, text.Right, text.Bottom);

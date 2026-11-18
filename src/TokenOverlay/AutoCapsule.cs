@@ -113,11 +113,33 @@ internal static class AutoCapsule
             + 3 * Math.Max(2, RingSize(dpi, scale).Margin);
     }
     // The width the ring's lines take in the ring module: the widest line with a margin each side, or nothing.
-    internal static int RingNoteWidth(uint dpi, int scale, string? note)
+    internal static int RingNoteWidth(uint dpi, int scale, string? note) =>
+        string.IsNullOrWhiteSpace(note) ? 0 : RingNoteWidth(dpi, scale, note.Split('\n'));
+    internal static int RingNoteWidth(uint dpi, int scale, string[] lines)
     {
-        if (string.IsNullOrWhiteSpace(note)) return 0;
         using var font = LabelFont(dpi, scale);
-        return note.Split('\n').Max(text => TextRenderer.MeasureText(text, font, Size.Empty, Flags).Width) + 4 * RingSize(dpi, scale).Margin;
+        return lines.Max(text => TextRenderer.MeasureText(text, font, Size.Empty, Flags).Width) + 4 * RingSize(dpi, scale).Margin;
+    }
+    // The ring's lines with the first (the model's name) broken in two at the space that leaves the longer part shortest
+    // (2026-11-15: "Deepseek V4.1 Flash" left no room for the third meter, the user: "잘린다 막대그래프가"). Null without
+    // a space, or when one more line would not stand in the ring's height.
+    internal static string[]? RingNoteBroken(uint dpi, int scale, string? note)
+    {
+        if (string.IsNullOrWhiteSpace(note)) return null;
+        var lines = note.Split('\n');
+        using var font = LabelFont(dpi, scale);
+        var height = TextRenderer.MeasureText("가Ag", font, Size.Empty, Flags).Height;
+        if ((lines.Length + 1) * height > RingSize(dpi, scale).Disc) return null;
+        var first = lines[0];
+        string[]? best = null;
+        var narrowest = int.MaxValue;
+        for (var i = first.IndexOf(' '); i > 0; i = first.IndexOf(' ', i + 1))
+        {
+            string[] broken = [first[..i], first[(i + 1)..], .. lines[1..]];
+            var width = broken.Max(text => TextRenderer.MeasureText(text, font, Size.Empty, Flags).Width);
+            if (width < narrowest) (best, narrowest) = (broken, width);
+        }
+        return best;
     }
     // The worker's rows under its name: a provider at the left ("" when none) beside a rate or cache line at the
     // right ("" when none), as many rows as the longer list.

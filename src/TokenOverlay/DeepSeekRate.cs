@@ -5,7 +5,8 @@ namespace TokenOverlay;
 // One finished DeepSeek Harness (DSH) task (a turn: from the request to the end of its last step), counted the way the
 // Claude capsule counts a turn: TPS = output ÷ the whole turn (tools and every wait included); 모델 = output ÷ its
 // requests' times added up (step start → the step's committed message, the wait for the first piece included);
-// 생성 = output ÷ their generating time only (first streamed piece → committed message). Tool time is out of both.
+// 생성 = output ÷ their generating time only (first token → committed message, as DSH's own decode time). Tool time is
+// out of both.
 internal sealed record DeepSeekTurn(long Output, double Seconds, double RequestSeconds, double ModelSeconds, int Requests, string? Model, DateTimeOffset At)
 {
     public double TokensPerSecond => Output / Seconds;
@@ -198,19 +199,8 @@ internal sealed class DeepSeekRateSource
         }
     }
 
-    // Earliest streamed piece of a message: a chunk's "time", or a reasoning run's "time0".
-    private static long? FirstPiece(JsonElement data)
-    {
-        if (!data.TryGetProperty("stream", out var stream) || stream.ValueKind != JsonValueKind.Array) return null;
-        long? first = null;
-        foreach (var piece in stream.EnumerateArray())
-        {
-            if (piece.ValueKind != JsonValueKind.Object) continue;
-            var key = piece.TryGetProperty("type", out var kind) && kind.GetString() == "reasoning-chunks" ? "time0" : "time";
-            if (piece.TryGetProperty(key, out var t) && t.TryGetInt64(out var at) && (first is null || at < first)) first = at;
-        }
-        return first;
-    }
+    // The message's first token, timed as DSH times it (DeepSeekEvents.FirstPiece).
+    private static long? FirstPiece(JsonElement data) => DeepSeekEvents.FirstPiece(data);
 
     internal static DeepSeekTurn? LastTurn(byte[] compressed)
     {
