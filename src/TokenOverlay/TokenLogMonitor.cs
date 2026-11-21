@@ -30,6 +30,8 @@ internal sealed record TokenSnapshot(
     public double? ContextFill { get; init; }
     // Under the ring: the model and its context limit ("Opus 5.5\n600K").
     public string? RingNote { get; init; }
+    // The ring note's last line is the Codex "압축 좋음" notice (CodexCompactHint), drawn in amber.
+    public bool RingNoteAlert { get; init; }
     // Two more capsule rows (Claude): the latest DeepSeek Harness task, while it is recent.
     public DeepSeekTurn? DeepSeek { get; init; }
     // When this Claude session's tool calls launched the DeepSeek worker: only its own tasks get the rows above.

@@ -158,6 +158,29 @@ internal static class TelemetryChecks
         codex.Ingest(Logs(CodexWait(16.7351818, 1500, 203)));
         Check(Math.Abs(codex.CodexTurn(turnId, counted).PureSeconds!.Value - 9.5495316) < 1e-6, "a re-sent wait record is not counted twice");
 
+        // Seen 2026-11-19: a request whose span two levels up never arrived knows no turn. Its own wait record (same
+        // end, same output) ties it to the response the turn counted right after it.
+        var orphaned = new TelemetryStore();
+        orphaned.Ingest(Spans(Span("o1", "ow", "responses_websocket.stream_request", 1.0, 3.9), Span("ow", "ot", "stream_request", 0.99, 1.0),
+            Span("ot", null, "try_run_sampling_request", 0.9, 4.0, "turn-o"),
+            Span("o2", "ox", "responses_websocket.stream_request", 5.0, 7.9), Span("ox", "gone", "stream_request", 4.99, 5.0)));
+        var orphanCounted = new[] { Counted(3.95, 19), Counted(8.1, 273) };
+        Check(orphaned.CodexTurn("turn-o", orphanCounted) is { Seconds: null, Requests: 1 },
+            "a request of unknown turn with no wait record of its own is not taken");
+        orphaned.Ingest(Logs(CodexWait(7.9, 900, 274)));
+        Check(orphaned.CodexTurn("turn-o", orphanCounted) is { Seconds: null, Requests: 1 },
+            "a wait record at the same moment with another output does not tie it (another chat's request)");
+        orphaned.Ingest(Logs(CodexWait(3.9, 700, 19), CodexWait(7.9, 1000, 273)));
+        Check(orphaned.CodexTurn("turn-o", orphanCounted) is { Requests: 2, Note: null } tied && Math.Abs(tied.Seconds!.Value - 5.8) < 1e-6
+            && Math.Abs(tied.PureSeconds!.Value - 4.1) < 1e-6,
+            "a request of unknown turn tied by its own wait record (same end, same output) fills 모델 and 생성");
+        Check(orphaned.CodexTurn("turn-o", [Counted(3.95, 19), Counted(7.5, 273), Counted(8.1, 273)]) is { Seconds: null },
+            "it is not taken by a response counted before it ended");
+        orphaned.Ingest(Spans(Span("o3", "oy", "responses_websocket.stream_request", 2.0, 3.0), Span("oy", "gone", "stream_request", 1.99, 2.0)));
+        orphaned.Ingest(Logs(CodexWait(3.0, 300, 55)));
+        Check(orphaned.CodexTurn("turn-o", [Counted(3.95, 19), Counted(9.0, 55)]) is { Seconds: null },
+            "nor by a response after the turn's previous one when it ended before that one");
+
         // Heavy use: the span tree is evicted long before the requests are; a resolved request must survive that.
         var busy = new TelemetryStore(maxSpans: 40);
         busy.Ingest(Spans(Span("b1", "bw", "responses_websocket.stream_request", 1, 3), Span("bw", "bt", "stream_request", 0.99, 1)));
@@ -190,6 +213,27 @@ internal static class TelemetryChecks
             && two.ExpandedRows.Any(r => r.Value == "100.67 TPS") && two.ExpandedRows.Any(r => r.Value.EndsWith("요청마다 첫 응답 대기 제외")),
             "details explain the value or why it is missing");
         Check(TurnPresentation.Create(Snap(turn with { Seconds = null })).SubLine is null, "status-only capsule has no second line");
+
+        // ----- a request lost while the overlay was closed (seen 2026-11-18: 1 of 35 in an update's 12 s gap)
+        var lostAt = DateTimeOffset.Parse("2026-11-18T13:31:41Z");
+        var lost = new TelemetryStore();
+        lost.Ingest(Spans(ClaudeRequest("p1", 1000, ttft: 200), ClaudeRequest("p2", 2000, ttft: 500), ClaudeRequest("p3", 1000, ttft: 300)));
+        ClaudeResponse Sent(string id, long output, double at) => new(id, output, lostAt.AddSeconds(at));
+        var sent = new[] { Sent("p1", 100, 1), Sent("p2", 200, 5), Sent("p2", 200, 5), Sent("p3", 100, 8), Sent("p4", 50, 12) };
+        var mostly = lost.ClaudeTurn(sent, lostAt.AddSeconds(60));
+        Check(mostly is { Seconds: 4.0, Requests: 3, Output: 400, Note: null } && Math.Abs(mostly.PureSeconds!.Value - 3.0) < 1e-9
+            && mostly.Partial!.Contains("4건 중 3건"), "most requests collected and the rest long past: rated over the collected ones");
+        Check(lost.ClaudeTurn(sent, lostAt.AddSeconds(20)) is { Seconds: null, Output: null } wait && wait.Note!.Contains("3/4"),
+            "a missing request still within telemetry's arrival time keeps the rate empty");
+        Check(lost.ClaudeTurn([Sent("p1", 100, 1), Sent("q2", 100, 2), Sent("q3", 100, 3)], lostAt.AddSeconds(600)).Seconds is null,
+            "fewer than half collected: no rate");
+        Check(lost.ClaudeTurn([Sent("p1", 100, 1), Sent("p2", 200, 5)], lostAt.AddSeconds(60)) is { Seconds: 3.0, Output: null, Partial: null },
+            "all collected: the turn's own output, no note");
+        var rated = new TurnStatistics("t", 10_000, 450, 0, 30, "완료", false, null).With(mostly);
+        var ratedShown = TurnPresentation.Create(Snap(rated));
+        Check(ratedShown is { SubLine: "모델 100.00 TPS", SubLine2: "생성 133.33 TPS" } && ratedShown.Secondary.Value == "15.00"
+            && ratedShown.ExpandedRows.Any(r => r.Value.Contains("4건 중 3건")) && ratedShown.ExpandedRows.Any(r => r.Value.StartsWith("400 ÷ 요청 3건")),
+            "the capsule shows 모델 and 생성 over the collected requests, TPS over the whole turn, and the details say how many");
         foreach (var dpi in new uint[] { 96, 144, 216 })
         foreach (var scale in new[] { 75, 100, 130 })
         {
@@ -359,6 +403,8 @@ internal static class TelemetryChecks
             listed.Turns[0] with { FastMode = "on" }, listed.Turns[1] with { FastMode = "mixed" }, listed.Turns[2] with { FastMode = "off" }]));
         Check(fastRows[0].Rate == "⚡ 70.00" && fastRows[1].Rate == "⚡* 60.00" && fastRows[2].Rate == "50.00" && !fastRows[0].Model.Contains('⚡'),
             "history rows carry each turn's own Fast mark on the whole-turn rate");
+        Check(TurnPresentation.HistoryRows(new TurnHistory([listed.Turns[0] with { FastMode = "ultra" }]))[0].Rate == "⚡⚡ 70.00",
+            "an Ultrafast turn's history row carries two bolts");
         string CodexEvent(string type, string? id = null, long output = 0, long? ms = null) => JsonSerializer.Serialize(new
         {
             timestamp = "2026-10-05T00:00:00Z", type = "event_msg",

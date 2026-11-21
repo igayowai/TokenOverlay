@@ -369,6 +369,16 @@ internal sealed class OpenCodeSource
             sqlite3_column_type(statement, column) == Null ? null : sqlite3_column_int64(statement, column);
         public static string? Text(IntPtr statement, int column) =>
             sqlite3_column_type(statement, column) == Null ? null : Marshal.PtrToStringUTF8(sqlite3_column_text(statement, column));
+        public static byte[] Blob(IntPtr statement, int column)
+        {
+            var at = sqlite3_column_blob(statement, column);
+            var size = sqlite3_column_bytes(statement, column);
+            if (at == IntPtr.Zero || size <= 0) return [];
+            var bytes = new byte[size];
+            Marshal.Copy(at, bytes, 0, size);
+            return bytes;
+        }
+        public static void Bind(IntPtr statement, int index, byte[] blob) => sqlite3_bind_blob(statement, index, blob, blob.Length, Transient);
 
         private static byte[] Utf8(string text) => Encoding.UTF8.GetBytes(text + "\0");
 
@@ -382,6 +392,9 @@ internal sealed class OpenCodeSource
         [DllImport("winsqlite3.dll")] private static extern int sqlite3_column_type(IntPtr statement, int column);
         [DllImport("winsqlite3.dll")] private static extern long sqlite3_column_int64(IntPtr statement, int column);
         [DllImport("winsqlite3.dll")] private static extern IntPtr sqlite3_column_text(IntPtr statement, int column);
+        [DllImport("winsqlite3.dll")] private static extern IntPtr sqlite3_column_blob(IntPtr statement, int column);
+        [DllImport("winsqlite3.dll")] private static extern int sqlite3_column_bytes(IntPtr statement, int column);
+        [DllImport("winsqlite3.dll")] private static extern int sqlite3_bind_blob(IntPtr statement, int index, byte[] blob, int bytes, IntPtr destructor);
         [DllImport("winsqlite3.dll")] private static extern int sqlite3_finalize(IntPtr statement);
         [DllImport("winsqlite3.dll")] private static extern int sqlite3_close_v2(IntPtr db);
     }

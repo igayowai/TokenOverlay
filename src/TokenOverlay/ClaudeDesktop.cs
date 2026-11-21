@@ -10,7 +10,7 @@ namespace TokenOverlay;
 // Its own turns are not read yet: the capsule waits as for a chat not known, with the Claude anchor setting.
 // DeepSeek Harness: its desktop app the same way (user, 2026-11-13: "deepseek harness 앱에서도 opencode처럼 오버레이
 // 뜨게 해줘"); its turns are not read either.
-internal enum HostApp { None, Codex, Claude, OpenCode, DeepSeekHarness }
+internal enum HostApp { None, Codex, Claude, OpenCode, DeepSeekHarness, Antigravity }
 
 // Claude desktop "Code" tab sessions only. Regular claude.ai chats keep no local per-turn usage,
 // so they are reported as unavailable instead of being estimated.
@@ -41,9 +41,9 @@ internal sealed class ClaudeTurnReader
     // Claude Code sometimes writes earlier records again further down (seen around a compaction): a record is read once.
     private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
 
-    private sealed record Usage(long Input, long Output, long Cached, bool? Fast, string? RequestId);
-    // Request ids of the turn the last Snapshot() describes, for matching telemetry to that same turn.
-    internal IReadOnlyList<string?> DisplayedRequestIds { get; private set; } = [];
+    private sealed record Usage(long Input, long Output, long Cached, bool? Fast, string? RequestId, DateTimeOffset? At);
+    // Responses of the turn the last Snapshot() describes, for matching telemetry to that same turn.
+    internal IReadOnlyList<ClaudeResponse> DisplayedRequestIds { get; private set; } = [];
     private sealed class Turn(string id, DateTimeOffset? started)
     {
         public string Id = id;
@@ -224,7 +224,7 @@ internal sealed class ClaudeTurnReader
                 var input = (Number(usage, "input_tokens") ?? 0) + created + cached;
                 bool? fast = Text(usage, "speed") switch { "fast" => true, "standard" => false, _ => null };
                 if (_active.Messages.TryGetValue(messageId, out var before)) { _sessionInput -= before.Input; _sessionCached -= before.Cached; }
-                _active.Messages[messageId] = new Usage(input, Number(usage, "output_tokens") ?? 0, cached, fast, Text(root, "requestId"));
+                _active.Messages[messageId] = new Usage(input, Number(usage, "output_tokens") ?? 0, cached, fast, Text(root, "requestId"), at);
                 _sessionInput += input; _sessionCached += cached;
                 if (created * 2 > input && input >= RestoreFloor) _active.Restored = true;
                 if (usage.TryGetProperty("cache_creation", out var creation) && creation.ValueKind == JsonValueKind.Object)
@@ -279,12 +279,12 @@ internal sealed class ClaudeTurnReader
     // Completed turns, newest first, each with its request ids for matching telemetry.
     internal bool CaughtUp { get; private set; } = true;
 
-    internal IReadOnlyList<(TurnStatistics Turn, IReadOnlyList<string?> RequestIds)> Recent(int count) =>
+    internal IReadOnlyList<(TurnStatistics Turn, IReadOnlyList<ClaudeResponse> RequestIds)> Recent(int count) =>
         !CaughtUp ? [] : _earlier.Concat(_active is { Done: true, Messages.Count: > 0 } ? new[] { _active } : Array.Empty<Turn>()).Reverse().Take(count)
             .Select(t => (Describe(t, false, false), RequestIds(t))).ToArray();
 
-    private static IReadOnlyList<string?> RequestIds(Turn t) => t.Messages.Values
-        .Where(m => m.RequestId is not null || m.Output > 0).Select(m => m.RequestId).ToArray();
+    private static IReadOnlyList<ClaudeResponse> RequestIds(Turn t) => t.Messages.Values
+        .Where(m => m.RequestId is not null || m.Output > 0).Select(m => new ClaudeResponse(m.RequestId, m.Output, m.At)).ToArray();
 
     private static TurnStatistics Describe(Turn t, bool running, bool shownRunning)
     {

@@ -539,8 +539,10 @@ internal sealed partial class TokenStripForm : Form
     // Each row's icons at the size last drawn: Python's logo (cut from its icon) and the launcher's whole icon.
     private readonly (string Path, int Size, Bitmap? Image)?[] _topLogoImages = new (string, int, Bitmap?)?[TopRowCount];
     private readonly (string Path, int Size, Bitmap? Image)?[] _topLauncherImages = new (string, int, Bitmap?)?[TopRowCount];
-    public void SetTopLine(string? text, string? logo = null, string? launcherLogo = null) =>
-        SetTopLines(text is null ? [] : [new CpuTop.TopRow(text, logo, launcherLogo)]);
+    // Claude's icon ahead of a Claude session's name when another app ran the work.
+    private readonly (string Path, int Size, Bitmap? Image)?[] _topSessionImages = new (string, int, Bitmap?)?[TopRowCount];
+    public void SetTopLine(string? text, string? logo = null, string? launcherLogo = null, string? sessionLogo = null) =>
+        SetTopLines(text is null ? [] : [new CpuTop.TopRow(text, logo, launcherLogo, sessionLogo)]);
     public void SetTopLines(IReadOnlyList<CpuTop.TopRow> rows)
     {
         rows = rows.Take(TopRowCount).ToArray();
@@ -915,7 +917,7 @@ internal sealed partial class TokenStripForm : Form
         {
             CancelEditGesture();
             _hoverTimer.Dispose();
-            foreach (var kept in _topLogoImages.Concat(_topLauncherImages)) kept?.Image?.Dispose();
+            foreach (var kept in _topLogoImages.Concat(_topLauncherImages).Concat(_topSessionImages)) kept?.Image?.Dispose();
             Region?.Dispose();
             Region = null;
         }

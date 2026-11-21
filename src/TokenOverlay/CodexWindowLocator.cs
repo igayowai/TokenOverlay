@@ -759,6 +759,15 @@ internal static class CodexWindowLocator
                 : HostApp.None;
         }
 
+        // Antigravity's desktop app (Electron, per-user install under Programs\Antigravity). Its language server and the
+        // agy CLI are other executables, so the install folder and name are enough.
+        if (executableName.Equals("Antigravity.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return executablePath.Contains("\\Programs\\Antigravity\\", StringComparison.OrdinalIgnoreCase)
+                ? HostApp.Antigravity
+                : HostApp.None;
+        }
+
         var isKnownExecutableName = executableName.Equals("ChatGPT.exe", StringComparison.OrdinalIgnoreCase)
             || executableName.Equals("Codex.exe", StringComparison.OrdinalIgnoreCase);
         if (!isKnownExecutableName)

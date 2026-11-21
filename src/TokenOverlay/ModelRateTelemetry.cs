@@ -8,10 +8,17 @@ using System.Text.RegularExpressions;
 
 namespace TokenOverlay;
 
-// Sum of the model request times that belong to one turn. Seconds is null unless every request
-// of that turn was collected; Note says why.
+// One main-agent response of a Claude turn as the session log wrote it: its request id, the output it added, and when.
+internal readonly record struct ClaudeResponse(string? RequestId, long Output, DateTimeOffset? At = null);
+
+// Sum of the model request times that belong to one turn. Seconds is null unless the turn's requests were collected
+// (all of them, or for Claude most of them, see ClaudeTurn); Note says why.
 internal sealed record ModelRate(double? Seconds, int Requests, string? Note)
 {
+    // Set when only some requests were collected: the output of those requests, which the rates divide instead of the
+    // turn's whole output, and a note saying how many were counted.
+    public long? Output { get; init; }
+    public string? Partial { get; init; }
     // The same requests less each one's wait for the first piece; PureNote says why it is missing.
     public double? PureSeconds { get; init; }
     public string? PureNote { get; init; }
@@ -49,7 +56,9 @@ internal sealed class TelemetryStore
 
     // ----- small on-disk cache so the model line survives an overlay restart.
     // It holds request/turn ids, durations and token counts only — the same allow-listed fields as in memory.
-    private const int MaxSavedClaude = 5000;
+    // As many as are kept in memory: with a dozen sessions busy, 5000 was about two hours (seen 2026-11-18), so after a
+    // restart older turns lost their model line.
+    private const int MaxSavedClaude = MaxClaudeRequests;
     private const int MaxSavedCodex = 2000;
     private const int MaxSavedPending = 300;
     private bool _dirty;
@@ -248,31 +257,52 @@ internal sealed class TelemetryStore
     }
 
     // requestIds: one per main-agent response of the turn, exactly as the session log lists them.
-    public ModelRate ClaudeTurn(IReadOnlyCollection<string?> requestIds)
+    public ModelRate ClaudeTurn(IReadOnlyCollection<string?> requestIds) =>
+        ClaudeTurn(requestIds.Select(id => new ClaudeResponse(id, 0)).ToArray());
+
+    // A request the overlay did not receive is usually lost for good: Claude Code does not send it again, and every
+    // restart of the overlay (an update, a local deploy) drops what was sent while it was closed. Seen 2026-11-18: one
+    // request of 35 lost in a 12 s update gap left a 6½-minute turn with no 모델 or 생성. So once the missing ones are
+    // past the time telemetry takes to arrive and most of the turn was collected, the rates are taken over the requests
+    // that were: their output over their time. Nothing from another turn stands in.
+    internal static readonly TimeSpan ClaudeArrival = TimeSpan.FromSeconds(30);
+
+    public ModelRate ClaudeTurn(IReadOnlyCollection<ClaudeResponse> responses, DateTimeOffset? now = null)
     {
-        var wanted = requestIds.Distinct().ToArray();
+        // A response logged once per content block, or repeated, is one request.
+        var wanted = responses.Where(r => r.RequestId is not null).GroupBy(r => r.RequestId!, StringComparer.Ordinal)
+            .Select(g => new ClaudeResponse(g.Key, g.Max(r => r.Output), g.Max(r => r.At)))
+            .Concat(responses.Where(r => r.RequestId is null)).ToArray();
         if (wanted.Length == 0) return ModelRate.None;
         lock (_gate)
         {
             // Whole request times, and the same less each one's wait for the first piece (generating time only).
             double total = 0, pure = 0;
             int found = 0, timed = 0;
-            foreach (var id in wanted)
-                if (id is not null && _claude.TryGetValue(id, out var request))
+            long output = 0;
+            var late = false;
+            var cut = (now ?? DateTimeOffset.UtcNow) - ClaudeArrival;
+            foreach (var response in wanted)
+                if (response.RequestId is { } id && _claude.TryGetValue(id, out var request))
                 {
                     found++;
                     total += request.Ms;
+                    output += response.Output;
                     if (request.Ttft is double wait) { pure += request.Ms - Math.Min(wait, request.Ms); timed++; }
                 }
+                else if (response.At is not { } at || at > cut) late = true;
             if (found == 0) return ModelRate.None with { PureNote = ModelRate.Waiting };
+            string? partial = null;
             if (found < wanted.Length)
             {
                 var note = $"계측 일부 누락 ({found}/{wanted.Length})";
-                return new ModelRate(null, found, note) { PureNote = note };
+                if (late || found * 2 < wanted.Length || output <= 0) return new ModelRate(null, found, note) { PureNote = note };
+                partial = $"요청 {wanted.Length}건 중 {found}건 기준 · 나머지는 계측 누락";
             }
+            var rate = new ModelRate(total / 1000d, found, null) { Output = partial is null ? null : output, Partial = partial };
             return timed < found
-                ? new ModelRate(total / 1000d, found, null) { PureNote = $"첫 토큰 대기 계측 없음 ({found - timed}/{found})" }
-                : new ModelRate(total / 1000d, found, null) { PureSeconds = pure / 1000d };
+                ? rate with { PureNote = $"첫 토큰 대기 계측 없음 ({found - timed}/{found})" }
+                : rate with { PureSeconds = pure / 1000d };
         }
     }
 
@@ -293,8 +323,15 @@ internal sealed class TelemetryStore
         lock (_gate)
         {
             var streams = new List<SpanInfo>();
+            // Requests whose turn could not be found. Seen 2026-11-19 (Codex app 26.1111): 2 of a turn's 49 requests
+            // hung under a span two levels up that never arrived, so the turn showed no 모델 or 생성.
+            var orphans = new List<SpanInfo>();
             foreach (var id in _streams)
-                if (ResolveTurn(id) == turnId) streams.Add(_spans[id]);
+            {
+                var owner = ResolveTurn(id);
+                if (owner == turnId) streams.Add(_spans[id]);
+                else if (owner is null && _spans[id].EndMs > 0) orphans.Add(_spans[id]);
+            }
             if (streams.Count == 0 || responses.Count == 0) return ModelRate.None;
             if (streams.Any(s => s.EndMs <= 0))
             {
@@ -307,10 +344,14 @@ internal sealed class TelemetryStore
             double total = 0, pure = 0, worst = 0;
             int matched = 0, timed = 0;
             var used = new bool[streams.Count];
+            var usedOrphans = new HashSet<int>();
             var takenWaits = new HashSet<int>();
+            var previousAt = double.NaN;
             foreach (var response in responses.OrderBy(r => r.At))
             {
                 var at = (double)response.At.ToUnixTimeMilliseconds();
+                var after = double.IsNaN(previousAt) ? at - OrphanLeadMs : previousAt;
+                previousAt = at;
                 var best = -1;
                 var bestEnd = double.MinValue;
                 for (var i = 0; i < streams.Count; i++)
@@ -318,12 +359,19 @@ internal sealed class TelemetryStore
                     var end = streams[i].EndMs;
                     if (end <= at + ClockSlackMs && end > bestEnd) { best = i; bestEnd = end; }
                 }
-                if (best < 0 || used[best]) continue;
+                SpanInfo chosen;
+                if (best >= 0 && !used[best]) { used[best] = true; chosen = streams[best]; }
+                else if (FindOrphan(orphans, usedOrphans, after, at, response.Output) is var orphan and >= 0)
+                {
+                    usedOrphans.Add(orphan);
+                    chosen = orphans[orphan];
+                    bestEnd = chosen.EndMs;
+                }
+                else continue;
                 var bestGap = Math.Abs(at - bestEnd);
-                used[best] = true;
-                var spanEnd = streams[best].EndMs;
+                var spanEnd = chosen.EndMs;
                 var lastOutput = response.LastItem is DateTimeOffset item ? (double)item.ToUnixTimeMilliseconds() : spanEnd;
-                var request = streams[best].Milliseconds + Math.Clamp(lastOutput - spanEnd, 0, Math.Max(0, at + ClockSlackMs - spanEnd));
+                var request = chosen.Milliseconds + Math.Clamp(lastOutput - spanEnd, 0, Math.Max(0, at + ClockSlackMs - spanEnd));
                 total += request;
                 if (FindCodexWait(spanEnd, at, response.Output, takenWaits) is var wait and >= 0)
                 {
@@ -343,6 +391,24 @@ internal sealed class TelemetryStore
                 ? new ModelRate(total / 1000d, matched, null) { WorstOffsetMs = worst, PureNote = $"첫 토큰 대기 계측 없음 ({matched - timed}/{matched})" }
                 : new ModelRate(total / 1000d, matched, null) { WorstOffsetMs = worst, PureSeconds = pure / 1000d };
         }
+    }
+
+    // A response the turn's own requests do not cover may take a request whose turn is unknown, only if that request
+    // ended after the turn's previous response was counted (the order inside a turn) and Codex's own record of it
+    // ended at the same moment with exactly this response's output. Requests of other chats running at the same time
+    // are unknown too, so the output must match, not only the time.
+    private const double OrphanLeadMs = 120_000;
+
+    private int FindOrphan(List<SpanInfo> orphans, HashSet<int> used, double after, double at, long output)
+    {
+        var found = -1;
+        for (var i = 0; i < orphans.Count; i++)
+        {
+            var end = orphans[i].EndMs;
+            if (used.Contains(i) || end <= after || end > at + ClockSlackMs || (found >= 0 && end <= orphans[found].EndMs)) continue;
+            if (_codexWaits.Any(w => w.Output == output && Math.Abs(w.AtMs - end) <= ClockSlackMs)) found = i;
+        }
+        return found;
     }
 
     private string? ResolveTurn(string spanId)

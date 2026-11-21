@@ -27,6 +27,7 @@ internal sealed partial class OverlayContext : ApplicationContext
     private readonly ClaudeDesktopSource _claude;
     private readonly OpenCodeSource _openCodeSource = new();
     private readonly DeepSeekSessionSource _deepSeekSessions = new();
+    private readonly AntigravitySource _antigravity = new();
     private readonly DeepSeekRateSource _deepSeek = DeepSeekRateSource.ForThisPc();
     private string? _pendingVisibleTitle;
     private HostApp _pendingApp;
@@ -461,6 +462,20 @@ internal sealed partial class OverlayContext : ApplicationContext
                         Panes: (IReadOnlyList<ClaudePane>)Array.Empty<ClaudePane>());
                 }
 
+                // Antigravity desktop: its conversation's numbers from Antigravity's own files (AntigravitySessions.cs).
+                if (foreground?.App == HostApp.Antigravity)
+                {
+                    var antigravity = _antigravity.Poll(foreground);
+                    return (
+                        Snapshot: antigravity.Snapshot,
+                        Version: antigravity.SessionVersion,
+                        ThreadId: antigravity.Route.ThreadId,
+                        RouteStatus: antigravity.Route,
+                        VisibleTitle: _antigravity.VisibleTitle,
+                        App: HostApp.Antigravity,
+                        Panes: (IReadOnlyList<ClaudePane>)Array.Empty<ClaudePane>());
+                }
+
                 var routeStatus = _routeMonitor.Poll();
                 var known = routeStatus.IsConnected && routeStatus.ActiveWindowCount == 1
                     && !string.IsNullOrWhiteSpace(routeStatus.ThreadId);
@@ -483,6 +498,8 @@ internal sealed partial class OverlayContext : ApplicationContext
                         CacheAlert = CacheStatus.CapsuleAlert(turnReader.Cache, DateTimeOffset.UtcNow),
                         CacheBar = CacheStatus.CapsuleBar(turnReader.Cache, DateTimeOffset.UtcNow),
                         ContextFill = ContextUsage.CodexFill(snapshot), RingNote = ContextUsage.Note(turn?.Model, snapshot.ContextWindowTokens) };
+                    var now = DateTimeOffset.UtcNow;
+                    snapshot = CodexCompactHint.Apply(snapshot, turnReader.LiveSubAgents(now), now);
                 }
                 return (
                     Snapshot: snapshot,
@@ -618,7 +635,7 @@ internal sealed partial class OverlayContext : ApplicationContext
     {
         var shown = TurnPresentation.ChooseLines(TurnPresentation.Create(snapshot), _settings.CacheHitLineEnabled, _settings.ProviderLineEnabled);
         shown = WithFreeTokens(shown with { Sessions = SessionsFor(shown.App), CpuMeter = _settings.CpuMeterEnabled });
-        return _settings.ContextRingEnabled ? shown : shown with { ContextFill = null, RingNote = null };
+        return _settings.ContextRingEnabled ? shown : shown with { ContextFill = null, RingNote = null, RingNoteAlert = false };
     }
 
     // The Ctrl list's table holds OpenCode Go's windows, no longer the recent turns, and the week's reset line the

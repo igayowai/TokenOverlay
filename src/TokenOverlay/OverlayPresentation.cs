@@ -37,6 +37,8 @@ internal sealed record OverlayPresentation(
     // Part of the ring: the model in use and the size of its context limit ("Opus 5.5\n600K"), on a low step to the
     // ring's left resting on the capsule; shown and hidden with the ring. Null shows the ring alone.
     public string? RingNote { get; init; }
+    // The ring's last line is a call to act ("압축 좋음", 2026-11-19), drawn in amber instead of the value colour.
+    public bool RingNoteAlert { get; init; }
     // The CPU meter at the left end of the ring's row, which then runs the capsule's full width (the setting); its
     // reading is the form's own, redrawn once a second without a new layout.
     public bool CpuMeter { get; init; }

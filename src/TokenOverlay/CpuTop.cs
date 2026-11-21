@@ -53,8 +53,10 @@ internal sealed partial class CpuTop : IDisposable
     ];
 
     // One line as the form draws it: its text, and the program files whose icons stand for its program (Python) and for
-    // who started it, when there are such.
-    internal sealed record TopRow(string Text, string? Logo, string? LauncherLogo);
+    // who started it, when there are such. SessionLogo: Claude's icon ahead of the name, when another app ran the work and
+    // the name is a Claude session's (2026-11-18, the user picked it: an OpenCode CLI a Claude session had started read
+    // as "OpenCode · 작업 세션", taken for an OpenCode session).
+    internal sealed record TopRow(string Text, string? Logo, string? LauncherLogo, string? SessionLogo = null);
 
     internal static Launcher? LauncherOf(string exe) => Launchers.FirstOrDefault(l => l.Matches(exe));
     // The launcher whose word starts the line, if one does.
@@ -76,8 +78,9 @@ internal sealed partial class CpuTop : IDisposable
         return first.Count > 0 ? first[0].Text : null;
     }
 
-    // One line of the reading: its text, the busiest process of its group and who started it.
-    internal readonly record struct Ranked(string Text, int Heaviest, Launcher? Launcher);
+    // One line of the reading: its text, the busiest process of its group and who started it. ClaudeName: the name is a
+    // Claude session's while another app started the work (see TopRow.SessionLogo).
+    internal readonly record struct Ranked(string Text, int Heaviest, Launcher? Launcher, bool ClaudeName = false);
 
     // The lines of the busiest groups, the busiest first, at most Count of them (two since 2026-11-15, the user: "CPU
     // 사용량 1등하고 2등 이렇게 둘다 표시"). Empty when nothing used the processor.
@@ -118,7 +121,7 @@ internal sealed partial class CpuTop : IDisposable
                 var name = top.Session.Length == 0 ? UnknownSession : titleOf(top.Session) ?? top.Session[..Math.Min(8, top.Session.Length)];
                 text = $"{program} {share} · {name}";
             }
-            lines.Add(new(text, top.Heaviest.Pid, launcher));
+            lines.Add(new(text, top.Heaviest.Pid, launcher, top.Session is not null && launcher is not null && launcher != Launchers[0]));
         }
         return lines;
     }
@@ -344,18 +347,21 @@ internal sealed partial class CpuTop : IDisposable
         // Processor time the whole PC had over the same readings, in 100 ns.
         _capacities[_slot] = (long)((at - last) * 10_000_000.0 / Stopwatch.Frequency) * System.Environment.ProcessorCount;
         var rows = new List<TopRow>();
-        foreach (var (text, heaviest, launcher) in Lines(procs, _capacities.Sum(), id => _index.TitleOf(id), 2, p => CodexThread(p, procs)))
+        string? AppLogo(Launcher launcher)
         {
-            string? launcherLogo = null;
-            if (launcher is not null && (!_logoFiles.TryGetValue(launcher.Word, out launcherLogo) || !File.Exists(launcherLogo)))
-            {
-                _logoFiles.Remove(launcher.Word);
-                if ((launcherLogo = LogoFile(launcher, procs)) is not null) _logoFiles[launcher.Word] = launcherLogo;
-            }
+            if (_logoFiles.TryGetValue(launcher.Word, out var file) && File.Exists(file)) return file;
+            _logoFiles.Remove(launcher.Word);
+            if ((file = LogoFile(launcher, procs)) is not null) _logoFiles[launcher.Word] = file;
+            return file;
+        }
+        foreach (var (text, heaviest, launcher, claudeName) in Lines(procs, _capacities.Sum(), id => _index.TitleOf(id), 2, p => CodexThread(p, procs)))
+        {
+            var launcherLogo = launcher is null ? null : AppLogo(launcher);
+            var sessionLogo = claudeName ? AppLogo(Launchers[0]) : null;
             var logo = _tracked.TryGetValue(heaviest, out var busy) && HasLogo(Name(procs.Find(p => p.Pid == heaviest).Exe ?? ""))
                 ? (busy.Image ??= ImagePath(busy.Handle) ?? "") is { Length: > 0 } image ? image : null
                 : null;
-            rows.Add(new(text, logo, launcherLogo));
+            rows.Add(new(text, logo, launcherLogo, sessionLogo));
         }
         _rows = rows;
         return rows.Count > 0 ? rows[0].Text : null;

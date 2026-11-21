@@ -285,7 +285,7 @@ internal static class AutoCapsuleChecks
             // Who started it (2026-11-15): the app's own icon from a program running on this PC, ahead of the program;
             // "-word" pictures are the same lines where the app gives no icon.
             foreach(var (name,text,logo,app) in new[]{("claude","Claude python 10% · 토큰 오버레이",(string?)null,(string?)null),("app","KakaoTalk 3%",null,null),
-                ("long","Claude dotnet 37% · B2 그룹 묶기·기본 타깃 리버싱 · 새 F 계산 조건",null,CpuTop.LogoFile("Claude")),("waiting",(string?)null,null,null),
+                ("long","Claude dotnet 37% · 사진 폴더 정리·중복 파일 찾기 · 새 이름 규칙",null,CpuTop.LogoFile("Claude")),("waiting",(string?)null,null,null),
                 ("python","Claude python 45% · C 판정 — 실측 기준·판정 도구",PythonOnPath(),CpuTop.LogoFile("Claude")),
                 ("python-name","Claude python 45% · C 판정 — 실측 기준·판정 도구",null,null),
                 ("gpt","GPT python 30%",PythonOnPath(),CpuTop.LogoFile("GPT")),("opencode","OpenCode node 12%",null,CpuTop.LogoFile("OpenCode")),
@@ -305,7 +305,12 @@ internal static class AutoCapsuleChecks
                 ("two",[new("GPT python 44% · 긴 문서 요약",PythonOnPath(),CpuTop.LogoFile("GPT")),new("Claude python 6% · 토큰 오버레이",PythonOnPath(),CpuTop.LogoFile("Claude"))]),
                 ("two-app",[new("Claude python 45% · C 판정 — 실측 기준·판정 도구",PythonOnPath(),CpuTop.LogoFile("Claude")),new("KakaoTalk 3%",null,null)]),
                 ("one",[new("Claude python 45% · C 판정 — 실측 기준·판정 도구",PythonOnPath(),CpuTop.LogoFile("Claude"))]),
-                ("app-itself",[new("Claude 5% · 앱",null,CpuTop.LogoFile("Claude")),new("Claude python 1% · 토큰 오버레이",PythonOnPath(),CpuTop.LogoFile("Claude"))])})
+                ("app-itself",[new("Claude 5% · 앱",null,CpuTop.LogoFile("Claude")),new("Claude python 1% · 토큰 오버레이",PythonOnPath(),CpuTop.LogoFile("Claude"))]),
+                // 2026-11-18: another app ran a Claude session's work; Claude's icon ahead of the name (the user's pick).
+                ("session-badge",[new("OpenCode python 48% · 빌드 확인",PythonOnPath(),CpuTop.LogoFile("OpenCode"),CpuTop.LogoFile("Claude")),
+                    new("Claude DiracLive 10% · 긴 문서 요약",null,CpuTop.LogoFile("Claude"))]),
+                ("session-badge-gpt",[new("GPT python 30% · 빌드 확인",PythonOnPath(),CpuTop.LogoFile("GPT"),CpuTop.LogoFile("Claude")),
+                    new("OpenCode node 12% · 사진 폴더 정리·중복 파일 찾기 · 새 이름 규칙",null,CpuTop.LogoFile("OpenCode"),CpuTop.LogoFile("Claude"))])})
             {
                 form.ApplyTheme(OverlayThemePalette.For(kind));
                 form.SetMeters(1.0,0.72,Gpu(30,35));
@@ -313,6 +318,26 @@ internal static class AutoCapsuleChecks
                 using var shot=Shot(form);
                 shot.Save(Path.Combine(directory,$"topline-{(kind==OverlayThemeKind.Light?"light":"dark")}-{name}.png"));
             }
+            // Draft (2026-11-19, the user's "오버레이가 알려주기"): a Codex chat past 300k whose answer ended 2 minutes ago,
+            // with no background work, shows "압축 좋음" in amber in place of the compaction point.
+            foreach(var kind in new[]{OverlayThemeKind.Light,OverlayThemeKind.Dark})
+            foreach(var (name,hinted) in new[]{
+                ("before",TurnPresentation.Create(Live(0.63) with { App=HostApp.Codex, CacheNote="캐시히트 98.2%", CacheBar=null }) with { RingNote="6.2 Sol\n475K", CpuMeter=true }),
+                ("hint",TurnPresentation.Create(Live(0.63) with { App=HostApp.Codex, CacheNote="캐시히트 98.2%", CacheBar=null }) with { RingNote="6.2 Sol\n압축 좋음", RingNoteAlert=true, CpuMeter=true }),
+                // Draft (2026-11-19): Codex Fast and Ultrafast turns, one bolt and two before TPS.
+                ("fast",TurnPresentation.Create(Live(0.63) with { App=HostApp.Codex, CacheNote="캐시히트 98.2%", CacheBar=null, Turn=Live(0.63).Turn! with { FastMode="on" } }) with { RingNote="6.2 Sol\n475K", CpuMeter=true }),
+                ("ultra",TurnPresentation.Create(Live(0.63) with { App=HostApp.Codex, CacheNote="캐시히트 98.2%", CacheBar=null, Turn=Live(0.63).Turn! with { FastMode="ultra" } }) with { RingNote="6.2 Sol\n475K", CpuMeter=true })})
+            {
+                form.SetPresentation(hinted);
+                form.ApplyLayout(OverlayLayoutCalculator.Calculate(request with {Presentation=hinted}));
+                form.ApplyTheme(OverlayThemePalette.For(kind));
+                form.SetMeters(0.25,0.54,Gpu(34,35));
+                form.SetTopLines([new("GPT python 13% · 빌드 확인",PythonOnPath(),CpuTop.LogoFile("GPT")),new("Claude python 1% · 토큰 오버레이",PythonOnPath(),CpuTop.LogoFile("Claude"))]);
+                using var shot=Shot(form);
+                shot.Save(Path.Combine(directory,$"compact-{(kind==OverlayThemeKind.Light?"light":"dark")}-{name}.png"));
+            }
+            form.SetPresentation(drafted);
+            form.ApplyLayout(draftLayout);
             form.SetTopLine(null);
             Check(CpuTop.HasLogo("python") && CpuTop.HasLogo("pythonw") && CpuTop.HasLogo("Python3.14") && !CpuTop.HasLogo("py")
                 && !CpuTop.HasLogo("pythonista") && CpuTop.HasLogo("dotnet") && CpuTop.HasLogo("java") && CpuTop.HasLogo("javaw") && CpuTop.HasLogo("node")
@@ -353,6 +378,14 @@ internal static class AutoCapsuleChecks
                     using var icon=Started(claudeFile);
                     using var none=Started(Path.Combine(directory,"no-such-file.exe"));
                     Check(!Same(word,icon) && Same(word,none),"CPU line: the starting app's own icon replaces its word; without one the word stays");
+                    Bitmap Marked(string text,string? badge){ form.SetTopLine(text,python,claudeFile,badge); return Shot(form); }
+                    using var plain=Marked("GPT python 45% · 세션",null);
+                    using var marked=Marked("GPT python 45% · 세션",claudeFile);
+                    using var missing=Marked("GPT python 45% · 세션",Path.Combine(directory,"no-such-file.exe"));
+                    using var bare=Marked("GPT python 45%",null);
+                    using var bareMarked=Marked("GPT python 45%",claudeFile);
+                    Check(!Same(plain,marked) && Same(plain,missing) && Same(bare,bareMarked),
+                        "CPU line: Claude's icon goes ahead of the session's name when asked; nothing without its icon or without a name");
                 }
                 form.SetTopLine(null);
             }
@@ -416,6 +449,16 @@ internal static class AutoCapsuleChecks
                     && CpuTop.LauncherOf("CODEX.EXE")?.Word=="GPT" && CpuTop.LauncherOf("opencode-pty.exe")?.Word=="OpenCode" && CpuTop.LauncherOf("python.exe") is null
                     && CpuTop.LauncherWord("Claude") is not null && CpuTop.LauncherWord("python") is null,
                     $"CPU line: the app that started the work goes first (Claude, GPT, OpenCode, DeepSeek, Antigravity; the nearest one), alone for its own processes ({string.Join(" | ",lines)})");
+                // 2026-11-18, seen live: an OpenCode CLI a Claude session had started (its parent gone, the session's id in
+                // its environment) ran python; the line read "OpenCode python 48% · 작업 세션" and was taken for an
+                // OpenCode session. Claude's icon goes ahead of the name then (the user's pick), never for Claude's own work
+                // or a name that is no Claude session's.
+                var handedOpenCode=new[]{P(100,4,"explorer.exe",1),P(900,8456,"opencode.exe",2,sid),P(910,900,"bash.exe",0),P(920,910,"python.exe",480)};
+                bool Badge(CpuTop.Proc[] procs)=>CpuTop.Lines(procs,1000,Title,1)[0].ClaudeName;
+                Check(CpuTop.Line(handedOpenCode,1000,Title)=="OpenCode python 48% · 토큰 오버레이" && Badge(handedOpenCode) && Badge(handed)
+                    && !Badge(Tree(50,40,20)) && !Badge(gpt) && !Badge(openCode) && !Badge(app)
+                    && !CpuTop.Lines(orphaned.Select(p=>p.Pid==700?p with {Session=sid}:p).ToArray(),1000,Title,1)[0].ClaudeName,
+                    "CPU line: Claude's icon marks a Claude session's name when another app (OpenCode, GPT) ran the work, not Claude's own");
             }
             var reports=Directory.CreateTempSubdirectory("cputop-");
             try
@@ -488,7 +531,12 @@ internal static class AutoCapsuleChecks
         Check(CpuUsage.Between((100,1000),(150,1100))==0.5 && CpuUsage.Between((100,1000),(100,1000)) is null
             && CpuUsage.Between((0,0),(200,200))==0 && TokenStripForm.CpuPercent(0.426)==43 && TokenStripForm.CpuPercent(1.3)==100 && TokenStripForm.CpuPercent(null) is null,
             "CPU meter: the share from Windows' time totals, shown in whole percents");
-        using(var live=new CpuUsage()) { live.Sample(); System.Threading.Thread.Sleep(300); Check(live.Sample() is >= 0 and <= 1,"CPU meter: a live reading from Windows");
+        using(var live=new CpuUsage()) {
+            // The counter opens on a worker (0.5–0.9 s): the first call must not wait for it, or the first poll waits too.
+            var firstCall=System.Diagnostics.Stopwatch.StartNew(); var first=live.Sample(); firstCall.Stop();
+            Check(first is null && firstCall.ElapsedMilliseconds<100,"CPU meter: the first reading does not hold up the caller while Windows opens the counter");
+            double? reading=null; for(var i=0;i<50 && reading is null;i++){ System.Threading.Thread.Sleep(100); reading=live.Sample(); }
+            Check(reading is >= 0 and <= 1,"CPU meter: a live reading from Windows");
             Check(CpuUsage.Memory() is > 0 and <= 1,"Meters: a live memory reading from Windows"); }
         // The third bar (2026-11-10): the graphics card's fan speed fills it, its temperature, whole, at the foot.
         Check(GpuReading.Label(Gpu(30,35))=="35°" && GpuReading.Label(null)=="—" && GpuReading.Label(new GpuReading(40,null))=="—"

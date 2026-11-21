@@ -33,20 +33,20 @@ internal sealed class CpuUsage : IDisposable
     private IntPtr _query;
     private IntPtr _counter;
     private bool _pdhTried;
+    private int _opening;
+    private bool _disposed;
     private (long Idle, long Total)? _last;
 
-    // The share in use since the previous call (0 to 1); null on the first call or when Windows gives no reading.
+    // The share in use since the previous call (0 to 1); null until the counter is open, on the first reading, or when
+    // Windows gives no reading.
     public double? Sample()
     {
-        if (!_pdhTried)
+        if (!Volatile.Read(ref _pdhTried))
         {
-            _pdhTried = true;
-            if (PdhOpenQuery(null, IntPtr.Zero, out _query) == 0
-                && PdhAddEnglishCounter(_query, @"\Processor Information(_Total)\% Processor Utility", IntPtr.Zero, out _counter) != 0)
-            {
-                PdhCloseQuery(_query);
-                _query = IntPtr.Zero;
-            }
+            // Opening the counter takes 0.5–0.9 s here, longer right after Windows starts. It is opened on a worker:
+            // done inside the first Tick it held back the first poll, so the first numbers waited for it (2026-11-21).
+            if (Interlocked.Exchange(ref _opening, 1) == 0) Task.Run(OpenCounter);
+            return null;
         }
         if (_query != IntPtr.Zero)
         {
@@ -62,6 +62,31 @@ internal sealed class CpuUsage : IDisposable
         return last is { } before ? Between(before, now) : null;
     }
 
+    private void OpenCounter()
+    {
+        var query = IntPtr.Zero;
+        var counter = IntPtr.Zero;
+        try
+        {
+            if (PdhOpenQuery(null, IntPtr.Zero, out query) == 0
+                && PdhAddEnglishCounter(query, @"\Processor Information(_Total)\% Processor Utility", IntPtr.Zero, out counter) != 0)
+            {
+                PdhCloseQuery(query);
+                query = IntPtr.Zero;
+            }
+            // The first collection only sets the starting point; taken here, the next Sample already has a reading.
+            if (query != IntPtr.Zero) PdhCollectQueryData(query);
+        }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { query = IntPtr.Zero; }
+        lock (this)
+        {
+            if (_disposed) { if (query != IntPtr.Zero) PdhCloseQuery(query); return; }
+            _counter = counter;
+            _query = query;
+            Volatile.Write(ref _pdhTried, true);
+        }
+    }
+
     internal static double? Between((long Idle, long Total) before, (long Idle, long Total) after)
     {
         var total = after.Total - before.Total;
@@ -71,8 +96,12 @@ internal sealed class CpuUsage : IDisposable
 
     public void Dispose()
     {
-        if (_query != IntPtr.Zero) PdhCloseQuery(_query);
-        _query = IntPtr.Zero;
+        lock (this)
+        {
+            _disposed = true;
+            if (_query != IntPtr.Zero) PdhCloseQuery(_query);
+            _query = IntPtr.Zero;
+        }
     }
 
     // Memory in use, as Task Manager counts it: physical memory less what is available (0 to 1).

@@ -16,21 +16,27 @@ internal sealed record TurnStatistics(string TurnId, long? Input, long? Output, 
     public bool Restored { get; init; }
     // Model id as the session log names it; "+" appended when the turn used more than one.
     public string? Model { get; init; }
+    // When the log closed the turn (its completion or abort record); null while it runs.
+    public DateTimeOffset? EndedAt { get; init; }
     public long? Total => Input + Output;
     public double? TokensPerSecond => Seconds > 0 && Output.HasValue ? Output / Seconds : null;
-    // Sum of this turn's model request times from local telemetry; null until every request is collected.
+    // Sum of this turn's model request times from local telemetry; null until the requests are collected.
     public double? ModelSeconds { get; init; }
     public int ModelRequests { get; init; }
     public string? ModelNote { get; init; }
     public double? ModelWorstOffsetMs { get; init; }
-    public double? ModelTokensPerSecond => ModelSeconds > 0 && Output > 0 ? Output / ModelSeconds : null;
+    // When only some requests were collected: their output (what the rates divide) and a note saying so.
+    public long? ModelOutput { get; init; }
+    public string? ModelPartial { get; init; }
+    public long? RatedOutput => ModelOutput ?? Output;
+    public double? ModelTokensPerSecond => ModelSeconds > 0 && RatedOutput > 0 ? RatedOutput / ModelSeconds : null;
     // The same requests less each one's wait for the first piece; null when a wait was not recorded.
     public double? PureSeconds { get; init; }
     public string? PureNote { get; init; }
-    public double? PureTokensPerSecond => PureSeconds > 0 && Output > 0 ? Output / PureSeconds : null;
+    public double? PureTokensPerSecond => PureSeconds > 0 && RatedOutput > 0 ? RatedOutput / PureSeconds : null;
     public TurnStatistics With(ModelRate rate) =>
         this with { ModelSeconds = rate.Seconds, ModelRequests = rate.Requests, ModelNote = rate.Note, ModelWorstOffsetMs = rate.WorstOffsetMs,
-            PureSeconds = rate.PureSeconds, PureNote = rate.PureNote };
+            PureSeconds = rate.PureSeconds, PureNote = rate.PureNote, ModelOutput = rate.Output, ModelPartial = rate.Partial };
 }
 
 // Incremental, read-only JSONL reader. Only complete lines advance the state machine.
@@ -51,7 +57,7 @@ internal sealed class TurnStatisticsReader
     private Turn? _finished;
     private bool _parseFailure;
     private string? _sessionId;
-    private bool? _appliedFast;
+    private string? _appliedFast;
     // Start of the turn the last Snapshot() describes, for matching telemetry to that same turn.
     internal DateTimeOffset? DisplayedStarted { get; private set; }
     internal IReadOnlyList<CountedResponse> DisplayedResponses { get; private set; } = [];
@@ -72,6 +78,11 @@ internal sealed class TurnStatisticsReader
     }
     // When the log last wrote something the model produced; the next token record closes that response.
     private DateTimeOffset? _lastOutputAt;
+    // Sub-agents started and not yet seen to finish, with their start. One whose end never comes (an end record of a
+    // kind not known here) stops counting an hour after it started, so it cannot hold the notice back for good.
+    private readonly Dictionary<string, DateTimeOffset> _liveSubAgents = new(StringComparer.Ordinal);
+    internal static readonly TimeSpan SubAgentForgetAfter = TimeSpan.FromHours(1);
+    internal int LiveSubAgents(DateTimeOffset now) => _liveSubAgents.Values.Count(started => now - started < SubAgentForgetAfter);
     private readonly List<Turn> _order = new();
     private bool _sawSettings;
     private sealed record Usage(long Input, long Output, long Cached);
@@ -82,23 +93,27 @@ internal sealed class TurnStatisticsReader
         public Usage? Baseline = baseline;
         public Usage? End;
         public double? Seconds;
+        public DateTimeOffset? EndedAt;
         public string State = "진행 중";
         public bool Closed;
         public string? Problem;
-        public bool SawFast, SawStandard, SawUnknown;
+        public bool SawFast, SawUltra, SawStandard, SawUnknown;
+        public bool SawKnown => SawFast || SawUltra || SawStandard;
         public string? Model;
         // Each response the log counted for this turn: when its token record was written and how much output it added.
         public readonly List<CountedResponse> Responses = new();
         // Started before this chat logged any applied settings (Codex records none ahead of a new chat's first turn).
         public bool AwaitingFirstSettings;
-        public void ObserveFast(bool? mode)
+        // tier: "fast", "ultra" or "standard" as read from service_tier; null when the record names none we know.
+        public void ObserveFast(string? tier)
         {
-            if (mode == true) SawFast = true;
-            else if (mode == false) SawStandard = true;
+            if (tier == "fast") SawFast = true;
+            else if (tier == "ultra") SawUltra = true;
+            else if (tier == "standard") SawStandard = true;
             else SawUnknown = true;
         }
-        public string FastMode => SawFast && SawStandard ? "mixed" : SawUnknown ? "unknown"
-            : SawFast ? "on" : SawStandard ? "off" : "unknown";
+        public string FastMode => (SawFast ? 1 : 0) + (SawUltra ? 1 : 0) + (SawStandard ? 1 : 0) > 1 ? "mixed"
+            : SawUnknown ? "unknown" : SawFast ? "on" : SawUltra ? "ultra" : SawStandard ? "off" : "unknown";
     }
 
     public TurnStatistics? Read(string path)
@@ -109,7 +124,7 @@ internal sealed class TurnStatisticsReader
                 FileShare.ReadWrite | FileShare.Delete);
             if (_path != path || file.Length < _offset)
             {
-                _path = path; _offset = 0; _line.SetLength(0); _turns.Clear(); _order.Clear(); _sawSettings = false;
+                _path = path; _offset = 0; _line.SetLength(0); _turns.Clear(); _order.Clear(); _sawSettings = false; _liveSubAgents.Clear();
                 CaughtUp = false;
                 _last = null; _active = null; _finished = null; _parseFailure = false;
                 _sessionId = null; _appliedFast = null; _lastRequestAt = null; _lastContext = 0; _lastCached = 0; _lastOutputAt = null;
@@ -265,6 +280,9 @@ internal sealed class TurnStatisticsReader
         close = kind.IndexOf((byte)'"');
         if (close < 0) return true;
         kind = kind[..close];
+        // Of the many finished items only a sub-agent's start and end are read (the compaction notice waits for them).
+        if (kind.SequenceEqual("item_completed"u8))
+            return line[..Math.Min(line.Length, 512)].IndexOf("\"item\":{\"type\":\"SubAgentActivity\""u8) >= 0;
         return kind.SequenceEqual("token_count"u8) || kind.SequenceEqual("thread_settings_applied"u8)
             || kind.SequenceEqual("task_started"u8) || kind.SequenceEqual("turn_started"u8)
             || kind.SequenceEqual("task_complete"u8) || kind.SequenceEqual("turn_completed"u8)
@@ -303,7 +321,8 @@ internal sealed class TurnStatisticsReader
                 // Applied settings belong to this session. Never read the current global/UI toggle.
                 if (_sessionId is null || Text(p, "thread_id") != _sessionId) return;
                 _appliedFast = p.TryGetProperty("thread_settings", out var settings) && settings.ValueKind == JsonValueKind.Object
-                    ? Text(settings, "service_tier") switch { "priority" or "fast" => true, "default" => false, _ => null }
+                    // The Codex app's own reading (app.asar, 26.1111): priority or fast → Fast, ultrafast → Ultrafast (two bolts).
+                    ? Text(settings, "service_tier") switch { "priority" or "fast" => "fast", "ultrafast" => "ultra", "default" => "standard", _ => null }
                     : null;
                 if (!_sawSettings)
                 {
@@ -314,11 +333,20 @@ internal sealed class TurnStatisticsReader
                     foreach (var earlier in _order.Where(t => t.AwaitingFirstSettings))
                     {
                         earlier.AwaitingFirstSettings = false;
-                        if (_appliedFast is not bool initial || earlier.SawFast || earlier.SawStandard) continue;
+                        if (_appliedFast is not string initial || earlier.SawKnown) continue;
                         earlier.SawUnknown = false;
                         earlier.ObserveFast(initial);
                     }
                 }
+            }
+            else if (type == "item_completed")
+            {
+                // Sub-agents this chat started and has not seen finish: background work the compaction notice waits for.
+                if (!p.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object
+                    || Text(item, "type") != "SubAgentActivity" || Text(item, "agent_thread_id") is not { } agent) return;
+                var kind = Text(item, "kind");
+                if (kind == "started" && Timestamp(root, p, "") is { } startedAt) _liveSubAgents[agent] = startedAt;
+                else if (kind == "completed") _liveSubAgents.Remove(agent);
             }
             else if (type is "task_started" or "turn_started")
             {
@@ -404,6 +432,7 @@ internal sealed class TurnStatisticsReader
                 target.State = type == "turn_aborted" ? "중단" : "완료";
                 var ms = Number(p, "duration_ms");
                 var end = Timestamp(root, p, "completed_at");
+                target.EndedAt = end;
                 target.Seconds = ms.HasValue ? ms.Value / 1000d
                     : end.HasValue && target.Started.HasValue ? (end.Value - target.Started.Value).TotalSeconds : null;
                 if (target.Seconds <= 0) target.Problem = "유효한 소요 시간 없음";
@@ -445,7 +474,7 @@ internal sealed class TurnStatisticsReader
             valid ? t.End!.Cached - t.Baseline!.Cached : null,
             t.Seconds,
             t.Problem is not null ? "기록 불완전" : t.End is null ? "집계 대기" : t.State,
-            running, t.Problem) { FastMode = t.FastMode, Model = t.Model };
+            running, t.Problem) { FastMode = t.FastMode, Model = t.Model, EndedAt = t.EndedAt };
     }
 
     private static string? Text(JsonElement p, string key) => p.TryGetProperty(key, out var v)
@@ -512,7 +541,7 @@ internal static class TurnPresentation
             turn.Seconds is double seconds ? OverlayPresentationBuilder.FormatDuration(seconds) : "—",
             // Same Fast mark as the capsule: each row shows the mode that turn itself ran with.
             turn.TokensPerSecond is double rate
-                ? (turn.FastMode switch { "on" => "⚡ ", "mixed" => "⚡* ", _ => "" }) + rate.ToString("0.00") : "—",
+                ? (turn.FastMode switch { "on" => "⚡ ", "ultra" => "⚡⚡ ", "mixed" => "⚡* ", _ => "" }) + rate.ToString("0.00") : "—",
             turn.ModelTokensPerSecond?.ToString("0.00") ?? "—",
             ModelNames.Short(turn.Model) ?? "—",
             (turn.Restored ? "↻ " : "") + (CacheStatus.Percent(turn.Cached, turn.Input) ?? "—"))).ToArray();
@@ -525,7 +554,7 @@ internal static class TurnPresentation
             new(field, compact, label, value, value != "—");
         var total = Metric(DisplayField.Total, t?.Running == true ? "직전" : "소모", "소모 토큰", t?.Total is long n
             ? OverlayPresentationBuilder.FormatTokenCount(n) : "—");
-        var speedLabel = t?.FastMode switch { "on" => "⚡ TPS", "mixed" => "⚡* TPS", _ => "TPS" };
+        var speedLabel = t?.FastMode switch { "on" => "⚡ TPS", "ultra" => "⚡⚡ TPS", "mixed" => "⚡* TPS", _ => "TPS" };
         var speed = Metric(DisplayField.ContextPercent, speedLabel, "출력 토큰/초", t?.TokensPerSecond?.ToString("0.00") ?? "—")
             with { LabelAfterValue = true };
         var rows = new List<OverlayMetric>
@@ -533,7 +562,7 @@ internal static class TurnPresentation
             Metric(DisplayField.Thread, "", "채팅", snapshot?.ThreadTitle ?? "현재 채팅 확인 중"),
             Metric(DisplayField.Thread, "", "상태", t is null ? "집계 대기" : t.Running && t.Seconds.HasValue ? "진행 중 · 직전 완료 턴" : t.State),
             Metric(DisplayField.Thread, "", "Fast 설정", t?.FastMode switch {
-                "on" => "⚡ ON", "off" => "OFF", "mixed" => "⚡* 혼합 · 턴 도중 변경", _ => "확인 불가" }),
+                "on" => "⚡ ON", "ultra" => "⚡⚡ Ultrafast", "off" => "OFF", "mixed" => "⚡* 혼합 · 턴 도중 변경", _ => "확인 불가" }),
             Metric(DisplayField.Total, "", "전체 소모 토큰", Count(t?.Total)),
             Metric(DisplayField.Input, "", "입력 토큰", Count(t?.Input)),
             Metric(DisplayField.CacheHit, "", "입력 중 캐시", Count(t?.Cached)),
@@ -544,16 +573,18 @@ internal static class TurnPresentation
             Metric(DisplayField.Thread, "", "", "도구·대기 포함 · 본 에이전트 · 로그 기준"),
             Metric(DisplayField.Thread, "", "모델 (도구 제외)", t?.ModelTokensPerSecond is double modelRate ? $"{modelRate:0.00} TPS" : "—"),
             Metric(DisplayField.Thread, "", "", t?.ModelTokensPerSecond is double
-                ? $"{Count(t.Output)} ÷ 요청 {t.ModelRequests}건 {OverlayPresentationBuilder.FormatDuration(t.ModelSeconds ?? 0)} · 도구 대기 제외 · 첫 응답 대기 포함"
+                ? $"{Count(t.RatedOutput)} ÷ 요청 {t.ModelRequests}건 {OverlayPresentationBuilder.FormatDuration(t.ModelSeconds ?? 0)} · 도구 대기 제외 · 첫 응답 대기 포함"
                 : t?.ModelNote ?? ModelRate.Waiting)
         };
-        if (snapshot?.App is HostApp.Claude or HostApp.Codex or HostApp.OpenCode or HostApp.DeepSeekHarness)
+        if (snapshot?.App is HostApp.Claude or HostApp.Codex or HostApp.OpenCode or HostApp.DeepSeekHarness or HostApp.Antigravity)
         {
             rows.Add(Metric(DisplayField.Thread, "", "생성 (대기 제외)", t?.PureTokensPerSecond is double pureRate ? $"{pureRate:0.00} TPS" : "—"));
             rows.Add(Metric(DisplayField.Thread, "", "", t?.PureTokensPerSecond is double
-                ? $"{Count(t.Output)} ÷ {OverlayPresentationBuilder.FormatDuration(t.PureSeconds ?? 0)} · 요청마다 첫 응답 대기 제외"
+                ? $"{Count(t.RatedOutput)} ÷ {OverlayPresentationBuilder.FormatDuration(t.PureSeconds ?? 0)} · 요청마다 첫 응답 대기 제외"
                 : t?.PureNote ?? ModelRate.Waiting));
         }
+        if (t?.ModelPartial is { } partial && t.ModelTokensPerSecond is not null)
+            rows.Add(Metric(DisplayField.Thread, "", "", partial));
         var status = t is null ? "현재 채팅 · 집계 대기" : !t.Seconds.HasValue ? "작업 중 · 완료 후 표시" : null;
         return new OverlayPresentation(total, speed, rows, 0, false, status)
         {
@@ -561,13 +592,14 @@ internal static class TurnPresentation
             // their wait for the first piece; 생성: generating time only.
             SubLine = status is not null ? null
                 : t?.ModelTokensPerSecond is double shown ? $"모델 {shown:0.00} TPS" : "모델 —",
-            SubLine2 = status is not null || snapshot?.App is not (HostApp.Claude or HostApp.Codex or HostApp.OpenCode or HostApp.DeepSeekHarness) ? null
+            SubLine2 = status is not null || snapshot?.App is not (HostApp.Claude or HostApp.Codex or HostApp.OpenCode or HostApp.DeepSeekHarness or HostApp.Antigravity) ? null
                 : t?.PureTokensPerSecond is double pure ? $"생성 {pure:0.00} TPS" : "생성 —",
             SubLineLeft = status is null ? snapshot?.CacheNote : null,
             SubLineLeftAlert = snapshot?.CacheAlert == true,
             SubLineLeftBar = status is null ? snapshot?.CacheBar : null,
             ContextFill = status is null ? snapshot?.ContextFill : null,
             RingNote = status is null ? snapshot?.RingNote : null,
+            RingNoteAlert = status is null && snapshot?.RingNoteAlert == true,
             WorkerLine = status is null ? snapshot?.DeepSeek?.Line : null,
             WorkerSubLine = status is null ? snapshot?.DeepSeek?.TtftLine : null,
             WorkerThirdLine = status is null ? snapshot?.DeepSeek?.PureLine : null,

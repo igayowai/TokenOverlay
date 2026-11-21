@@ -230,6 +230,51 @@ internal static class TurnChecks
         fast.ProcessLine(E("task_complete", "mixed", ms:1000));
         Check(fast.Snapshot()?.FastMode == "mixed", "applied context change within turn marks mixed");
         Check(TurnPresentation.Create(WithTurn(fast.Snapshot())).Secondary.CompactLabel == "⚡* TPS", "mixed turn is distinct from entirely Fast ON");
+        // Codex app 26.1111 has a second speed, "ultrafast", drawn there with two bolts (2026-11-19 user report).
+        fast.ProcessLine(Settings("ultrafast"));
+        fast.ProcessLine(E("task_started", "ultra"));
+        fast.ProcessLine(Context("ultra"));
+        fast.ProcessLine(E("task_complete", "ultra", ms:1000));
+        Check(fast.Snapshot()?.FastMode == "ultra", "ultrafast tier is its own mode, not unknown");
+        Check(TurnPresentation.Create(WithTurn(fast.Snapshot())).Secondary.CompactLabel == "⚡⚡ TPS", "Ultrafast compact rate carries two bolts");
+        Check(AutoCapsule.SplitLabel(TurnPresentation.Create(WithTurn(fast.Snapshot())).Secondary) == ("⚡⚡", "TPS"), "two bolts lead, unit trails");
+        fast.ProcessLine(E("task_started", "fast-to-ultra"));
+        fast.ProcessLine(Settings("priority"));
+        fast.ProcessLine(Context("fast-to-ultra"));
+        fast.ProcessLine(E("task_complete", "fast-to-ultra", ms:1000));
+        Check(fast.Snapshot()?.FastMode == "mixed", "Ultrafast then Fast inside one turn is mixed");
+        // Codex "압축 좋음" notice (2026-11-19): ≥ 300k, answered turn, 2 min quiet, no sub-agent still going.
+        var t0 = DateTimeOffset.Parse("2026-10-05T00:00:00Z");
+        Check(fast.Snapshot()?.EndedAt == t0, "a finished turn keeps when the log closed it");
+        string Sub(string kind, string agent, string at = "2026-10-05T00:00:00Z") => JsonSerializer.Serialize(new { timestamp = at, type = "event_msg",
+            payload = new { type = "item_completed", thread_id = "fast-session", turn_id = "x", item = new { type = "SubAgentActivity", agent_path = "a", agent_thread_id = agent, kind } } });
+        Check(TurnStatisticsReader.Relevant(Encoding.UTF8.GetBytes(Sub("started", "s1")))
+            && !TurnStatisticsReader.Relevant(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { timestamp = "2026-10-05T00:00:00Z", type = "event_msg",
+                payload = new { type = "item_completed", thread_id = "x", turn_id = "x", item = new { type = "CommandExecution", id = "c" } } }))),
+            "of the finished items only a sub-agent's are read");
+        var subs = new TurnStatisticsReader();
+        subs.ProcessLine(Sub("started", "s1"));
+        subs.ProcessLine(Sub("interacted", "s1"));
+        Check(subs.LiveSubAgents(t0.AddMinutes(5)) == 1, "a started sub-agent is background work");
+        subs.ProcessLine(Sub("completed", "s1"));
+        Check(subs.LiveSubAgents(t0.AddMinutes(5)) == 0, "a completed sub-agent is not");
+        subs.ProcessLine(Sub("started", "s2"));
+        Check(subs.LiveSubAgents(t0.AddMinutes(59)) == 1 && subs.LiveSubAgents(t0.AddMinutes(61)) == 0,
+            "a sub-agent whose end never comes stops holding the notice after an hour");
+        var answered = new TurnStatistics("h", 1, 1, 0, 10, "완료", false, null) { EndedAt = t0, Model = "gpt-6.2-sol" };
+        var quiet = t0 + CodexCompactHint.Quiet;
+        Check(CodexCompactHint.Show(answered, 300_000, 0, quiet), "notice: 300k, answered, 2 min quiet, nothing in the background");
+        Check(!CodexCompactHint.Show(answered, 299_999, 0, quiet), "no notice below 300k");
+        Check(!CodexCompactHint.Show(answered, 400_000, 0, quiet.AddSeconds(-1)), "no notice before 2 minutes of quiet");
+        Check(!CodexCompactHint.Show(answered, 400_000, 1, quiet), "no notice while a sub-agent is going");
+        Check(!CodexCompactHint.Show(answered with { Running = true }, 400_000, 0, quiet), "no notice while a new turn runs");
+        Check(!CodexCompactHint.Show(answered with { State = "중단" }, 400_000, 0, quiet)
+            && !CodexCompactHint.Show(answered with { EndedAt = null }, 400_000, 0, quiet), "no notice after a stopped turn or without its end");
+        var ringed = new TokenSnapshot("x", "", 0, 0, 0, 0, 0, 436_000, 612_000, DateTime.UtcNow) { Turn = answered, RingNote = "6.2 Sol\n612K" };
+        var hinted = CodexCompactHint.Apply(ringed, 0, quiet);
+        Check(hinted.RingNoteAlert && hinted.RingNote!.EndsWith("\n압축 좋음") && TurnPresentation.Create(hinted) is { RingNoteAlert: true } hintShown
+            && hintShown.RingNote == hinted.RingNote, "the notice takes the ring note's last line, in amber");
+        Check(CodexCompactHint.Apply(ringed, 0, quiet.AddSeconds(-1)) == ringed, "before then the ring note stays the compaction point");
         foreach (var tier in new string?[] { null, "auto", "new-tier" })
         {
             fast.ProcessLine(Settings(tier));

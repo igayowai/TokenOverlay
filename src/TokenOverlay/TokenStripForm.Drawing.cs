@@ -868,7 +868,9 @@ internal sealed partial class TokenStripForm
         var top = box.Top + (box.Height - lines.Length * lineHeight) / 2;
         for (var i = 0; i < lines.Length; i++)
             TextRenderer.DrawText(graphics, lines[i], noteFont, new Rectangle(box.Left, top + i * lineHeight, box.Width, lineHeight),
-                i == 0 ? _palette.Label : _palette.Value, AutoCapsule.Flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                i == 0 ? _palette.Label
+                : i == lines.Length - 1 && _presentation.RingNoteAlert ? OverlayThemePalette.CacheBarColor(CacheLevel.Middle) : _palette.Value,
+                AutoCapsule.Flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 
     // Plain block behind the ring: rounded top corners like the capsule's, straight sides down to the given y.
@@ -939,14 +941,15 @@ internal sealed partial class TokenStripForm
         var height = text.Height / TopRowCount;
         for (var i = 0; i < rows.Count && i < TopRowCount; i++)
             DrawTopRow(graphics, text with { Y = text.Top + i * height, Height = height }, rows[i], font, gap,
-                ref _topLogoImages[i], ref _topLauncherImages[i]);
+                ref _topLogoImages[i], ref _topLauncherImages[i], ref _topSessionImages[i]);
         using var divider = new Pen(Color.FromArgb(110, _palette.Label), Math.Max(1f, metrics.StrokeWidth));
         graphics.DrawLine(divider, area.Left + metrics.CapsuleRadius, area.Bottom, area.Right - metrics.CapsuleRadius, area.Bottom);
     }
 
     // One CPU line: who started it, its program, its share and its session, cut with "…" when too long.
     private void DrawTopRow(Graphics graphics, Rectangle text, CpuTop.TopRow row, Font font, int gap,
-        ref (string Path, int Size, Bitmap? Image)? logoImage, ref (string Path, int Size, Bitmap? Image)? launcherImage)
+        ref (string Path, int Size, Bitmap? Image)? logoImage, ref (string Path, int Size, Bitmap? Image)? launcherImage,
+        ref (string Path, int Size, Bitmap? Image)? sessionImage)
     {
         var line = row.Text;
         var space = line.IndexOf(' ');
@@ -977,6 +980,22 @@ internal sealed partial class TokenStripForm
             graphics.DrawImageUnscaled(image, text.Left, text.Top + (text.Height - image.Height) / 2);
             text = Rectangle.FromLTRB(text.Left + image.Width + gap, text.Top, text.Right, text.Bottom);
             line = line[(space + 1)..];
+        }
+        // Claude's icon ahead of a Claude session's name when another app ran the work (2026-11-18, the user's pick):
+        // "48% · ", the icon, then the name.
+        var dot = line.IndexOf(" · ", StringComparison.Ordinal);
+        if (row.SessionLogo is { } claude && dot >= 0 && TopLogo(ref sessionImage, claude, font.Height, whole: true) is { } badge)
+        {
+            var head = line[..(dot + 3)];
+            var width = TextRenderer.MeasureText(graphics, head, font, Size.Empty, AutoCapsule.Flags).Width;
+            // Without room for the icon and some of the name, the line as before.
+            if (text.Left + width + badge.Width + gap < text.Right)
+            {
+                TextRenderer.DrawText(graphics, head, font, text, _palette.Label, AutoCapsule.Flags | TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                graphics.DrawImageUnscaled(badge, text.Left + width, text.Top + (text.Height - badge.Height) / 2);
+                text = Rectangle.FromLTRB(text.Left + width + badge.Width + gap, text.Top, text.Right, text.Bottom);
+                line = line[(dot + 3)..];
+            }
         }
         TextRenderer.DrawText(graphics, line, font, text, _palette.Label,
             AutoCapsule.Flags | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
